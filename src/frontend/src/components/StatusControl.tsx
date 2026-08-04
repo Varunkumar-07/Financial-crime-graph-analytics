@@ -4,10 +4,6 @@ import "./StatusControl.css";
 
 const OPTIONS: CaseStatus[] = ["flagged", "reviewing", "cleared", "escalated"];
 
-export function StatusBadge({ status }: { status: CaseStatus }) {
-  return <span className={`status-badge status-${status}`}>{status}</span>;
-}
-
 export function StatusControl({ accountId }: { accountId: string }) {
   const { getStatus, setStatus } = useCaseStatus();
   const current = getStatus(accountId);

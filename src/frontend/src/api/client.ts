@@ -2,18 +2,13 @@
 // be running (see project README) for anything here to work.
 //
 // API_BASE is configurable via VITE_API_BASE_URL (a Vite build-time env
-// var, baked into the JS bundle at `npm run build` — Vite/React SPAs can't
-// read env vars at container runtime, only at build time). Local dev
+// var, baked into the JS bundle at `npm run build`). Local dev
 // (`npm run dev`) defaults to the backend's usual localhost port, matching
-// every earlier phase's testing. The Docker build sets this to "/api" so
-// requests go through the frontend's own nginx reverse proxy instead of
-// needing to know the backend container's address directly — see
-// frontend/nginx.conf and docker-compose.yml.
+// every earlier phase's testing.
 
 import type {
   ExplanationResponse,
   FlaggedAccountsResponse,
-  HealthResponse,
   ModelInfoResponse,
   RiskScoreResponse,
   SubgraphResponse,
@@ -37,10 +32,6 @@ async function request<T>(path: string): Promise<T> {
     throw new ApiError(res.status, detail);
   }
   return res.json() as Promise<T>;
-}
-
-export function getHealth() {
-  return request<HealthResponse>("/health");
 }
 
 export function getModelInfo() {

@@ -90,14 +90,6 @@ export interface ExplanationResponse {
   explain_subgraph_size: number;
 }
 
-export interface HealthResponse {
-  status: string;
-  model_loaded: boolean;
-  n_accounts: number;
-  n_cycles_cached: number;
-  threshold: number;
-}
-
 export interface ModelInfoResponse {
   model_name: string;
   auc_roc: number;

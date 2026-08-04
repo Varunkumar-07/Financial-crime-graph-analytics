@@ -47,7 +47,6 @@ class AppState:
         train_idx, val_idx = train_test_split(
             train_idx, test_size=0.125, stratify=y_np[train_idx], random_state=RANDOM_STATE
         )
-        self.test_idx = set(test_idx.tolist())
 
         print("[startup] Preprocessing features and loading model...")
         x_np = preprocess_features(self.data.x.numpy().copy(), self.data.feature_cols, train_idx)
@@ -88,7 +87,6 @@ class AppState:
         ).set_index("account")
 
         self.account_to_idx = {a: i for i, a in enumerate(self.data.accounts)}
-        self.idx_to_account = {i: a for a, i in self.account_to_idx.items()}
 
         print("[startup] Loading original MultiDiGraph...")
         self.G_multi = ga.load_graph()
