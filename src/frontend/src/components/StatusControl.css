@@ -1,0 +1,41 @@
+.status-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.status-select {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  border-radius: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel-alt);
+  color: var(--text);
+}
+.status-select:focus {
+  outline: 1px solid var(--accent);
+}
+
+.status-flagged {
+  color: var(--status-flagged);
+  background: color-mix(in srgb, var(--status-flagged) 15%, transparent);
+}
+.status-reviewing {
+  color: var(--status-reviewing);
+  background: color-mix(in srgb, var(--status-reviewing) 15%, transparent);
+}
+.status-cleared {
+  color: var(--status-cleared);
+  background: color-mix(in srgb, var(--status-cleared) 15%, transparent);
+}
+.status-escalated {
+  color: var(--status-escalated);
+  background: color-mix(in srgb, var(--status-escalated) 18%, transparent);
+}

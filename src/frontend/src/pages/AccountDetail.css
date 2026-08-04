@@ -1,0 +1,170 @@
+.account-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.back-link {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.back-link:hover {
+  color: var(--accent);
+}
+
+.detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.detail-header h1 {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.detail-badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.label-badge {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 4px 9px;
+  border-radius: 999px;
+}
+.label-illicit {
+  color: var(--risk-illicit);
+  background: color-mix(in srgb, var(--risk-illicit) 15%, transparent);
+}
+.label-licit {
+  color: var(--risk-licit);
+  background: color-mix(in srgb, var(--risk-licit) 15%, transparent);
+}
+.label-outline {
+  background: transparent;
+  border: 1px solid currentColor;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+@media (max-width: 1000px) {
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.panel h2 {
+  margin: 0 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.panel h3 {
+  margin: 16px 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.muted {
+  color: var(--text-faint);
+  font-size: 12px;
+  margin: 0;
+}
+
+.score-display {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.score-value {
+  font-size: 28px;
+  font-weight: 700;
+}
+.score-threshold {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.risk-bar-track {
+  position: relative;
+  width: 100%;
+  height: 6px;
+  background: var(--bg-panel-alt);
+  border-radius: 4px;
+  overflow: visible;
+}
+.risk-bar-track.large {
+  height: 10px;
+}
+.risk-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--status-reviewing), var(--risk-illicit));
+}
+.threshold-marker {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 16px;
+  background: #f5f5f5;
+}
+
+.feature-list {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+.feature-list > div {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 6px;
+}
+.feature-list dt {
+  color: var(--text-muted);
+}
+.feature-list dd {
+  margin: 0;
+  color: var(--text);
+}
+
+.attribution-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.attribution-list li {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+.attribution-value {
+  color: var(--accent);
+}

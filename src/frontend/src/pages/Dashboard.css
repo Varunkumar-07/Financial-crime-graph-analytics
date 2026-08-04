@@ -1,0 +1,151 @@
+.dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.dashboard-header h1 {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.dashboard-subtitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.dashboard-controls {
+  display: flex;
+  gap: 10px;
+}
+
+.search-input,
+.dashboard-controls select {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+.search-input {
+  width: 240px;
+}
+.search-input::placeholder {
+  color: var(--text-faint);
+}
+
+.banner {
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.banner-error {
+  color: var(--risk-illicit);
+  border-color: var(--risk-illicit);
+  background: color-mix(in srgb, var(--risk-illicit) 10%, transparent);
+}
+
+.accounts-table {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.accounts-table th,
+.accounts-table td {
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 13px;
+}
+
+.accounts-table th {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: var(--bg-panel-alt);
+  user-select: none;
+}
+.accounts-table th.sortable {
+  cursor: pointer;
+}
+.accounts-table th.sortable:hover {
+  color: var(--accent);
+}
+
+.accounts-table tbody tr {
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+.accounts-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+.accounts-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.empty-row {
+  text-align: center;
+  color: var(--text-faint);
+  padding: 24px;
+}
+
+.risk-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.risk-bar-track {
+  width: 80px;
+  height: 6px;
+  background: var(--bg-panel-alt);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.risk-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--status-reviewing), var(--risk-illicit));
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.pagination button {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.pagination button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.pagination button:not(:disabled):hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
