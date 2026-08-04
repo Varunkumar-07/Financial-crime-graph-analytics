@@ -1,6 +1,7 @@
 import math
 import sys
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -41,6 +42,15 @@ def _key_features(account_id: str) -> KeyFeatures:
     )
 
 
+# sort_by (API contract) -> flagged_df column (internal name).
+_SORT_COLUMNS = {
+    "risk_score": "probability",
+    "degree": "total_degree",
+    "community_illicit_pct": "community_illicit_density",
+    "cycle_count": "cycle_count",
+}
+
+
 # NOTE: /accounts/flagged is registered before /accounts/{account_id}/... routes.
 # It doesn't actually collide (all account_id routes require a suffix like
 # /risk-score), but ordering it first is the safer convention.
@@ -48,20 +58,42 @@ def _key_features(account_id: str) -> KeyFeatures:
 def flagged_accounts(
     page: int = Query(1, ge=1, description="1-indexed page number"),
     page_size: int = Query(20, ge=1, le=200, description="Results per page (max 200)"),
+    sort_by: Literal["risk_score", "degree", "community_illicit_pct", "cycle_count"] = Query(
+        "risk_score", description="Sorts the FULL flagged set (not just the current page) before pagination"
+    ),
+    sort_order: Literal["asc", "desc"] = Query("desc"),
 ):
-    total_flagged = len(state.flagged_accounts)
+    # Sorts all ~12.7K flagged accounts (not the full 515K graph — flagged_df
+    # is pre-filtered to proba >= threshold at startup) on every request, then
+    # slices the requested page out of the sorted result. kind="mergesort" is
+    # stable, so tied values keep a consistent relative order across
+    # requests — without that, paginating through a run of ties (e.g. many
+    # accounts with cycle_count=0) could show accounts out of order or
+    # skip/duplicate them between page loads, since pandas' default
+    # quicksort isn't guaranteed stable.
+    column = _SORT_COLUMNS[sort_by]
+    sorted_df = state.flagged_df.sort_values(column, ascending=(sort_order == "asc"), kind="mergesort")
+
+    total_flagged = len(sorted_df)
     total_pages = max(1, math.ceil(total_flagged / page_size))
     start = (page - 1) * page_size
     end = start + page_size
-    page_slice = state.flagged_accounts[start:end]
+    page_df = sorted_df.iloc[start:end]
 
     accounts = [
-        FlaggedAccount(account_id=acct, probability=proba, predicted_label="illicit")
-        for acct, proba in page_slice
+        FlaggedAccount(
+            account_id=row.account,
+            probability=row.probability,
+            predicted_label="illicit",
+            total_degree=row.total_degree,
+            community_illicit_density=row.community_illicit_density,
+            cycle_count=row.cycle_count,
+        )
+        for row in page_df.itertuples()
     ]
     return FlaggedAccountsResponse(
         page=page, page_size=page_size, total_flagged=total_flagged, total_pages=total_pages,
-        threshold=state.threshold, accounts=accounts,
+        threshold=state.threshold, sort_by=sort_by, sort_order=sort_order, accounts=accounts,
     )
 
 

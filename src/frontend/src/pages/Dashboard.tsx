@@ -1,46 +1,97 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError, getFlaggedAccounts, getRiskScore } from "../api/client";
-import type { FlaggedAccountsResponse, RiskScoreResponse } from "../api/types";
+import type { CaseStatus, FlaggedAccountsResponse, FlaggedSortBy, SortOrder } from "../api/types";
 import { StatusControl } from "../components/StatusControl";
 import { useCaseStatus } from "../context/CaseStatusContext";
 import "./Dashboard.css";
 
 const PAGE_SIZE = 25;
+const PAGE_WINDOW_RADIUS = 2; // nearby page buttons shown on each side of the current page
 
-type SortKey = "probability" | "total_degree" | "community_illicit_density" | "cycle_count";
+const SORT_LABELS: Record<FlaggedSortBy, string> = {
+  risk_score: "Risk Score",
+  degree: "Degree",
+  community_illicit_pct: "Community Illicit %",
+  cycle_count: "Cycles",
+};
+
+// Statuses that are NEVER a default — an account only ever gets one of
+// these through an explicit click, which CaseStatusContext always records.
+// That makes this list a genuinely COMPLETE record across all 12,748
+// flagged accounts, not just whatever page happens to be loaded — unlike
+// "flagged", which is everyone's starting state whether or not the
+// frontend has ever seen that account. See CaseStatusContext.tsx.
+const FULLY_TRACKED_STATUSES: CaseStatus[] = ["reviewing", "cleared", "escalated"];
+
+interface DisplayRow {
+  account_id: string;
+  probability: number;
+  total_degree: number;
+  community_illicit_density: number;
+  cycle_count: number;
+}
+
+const SORT_VALUE: Record<FlaggedSortBy, (r: DisplayRow) => number> = {
+  risk_score: (r) => r.probability,
+  degree: (r) => r.total_degree,
+  community_illicit_pct: (r) => r.community_illicit_density,
+  cycle_count: (r) => r.cycle_count,
+};
+
+function pageWindow(current: number, total: number): number[] {
+  const desired = PAGE_WINDOW_RADIUS * 2 + 1;
+  let start = Math.max(1, current - PAGE_WINDOW_RADIUS);
+  let end = Math.min(total, current + PAGE_WINDOW_RADIUS);
+  if (end - start + 1 < desired) {
+    if (start === 1) end = Math.min(total, start + desired - 1);
+    else if (end === total) start = Math.max(1, end - desired + 1);
+  }
+  const pages: number[] = [];
+  for (let p = start; p <= end; p++) pages.push(p);
+  return pages;
+}
 
 export function Dashboard() {
   const navigate = useNavigate();
-  const { getStatus } = useCaseStatus();
+  const { getStatus, getAccountsByStatus } = useCaseStatus();
 
   const [page, setPage] = useState(1);
+  // Sorting is server-side: the full ~12.7K flagged set is sorted on the
+  // backend before pagination, so every sort/page change re-fetches (see
+  // client.ts getFlaggedAccounts). Sorting only the currently-loaded page
+  // client-side was the original bug here — it looked correct but was only
+  // ever reordering the 25 rows already on screen.
+  const [sortBy, setSortBy] = useState<FlaggedSortBy>("risk_score");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
   const [listing, setListing] = useState<FlaggedAccountsResponse | null>(null);
-  const [details, setDetails] = useState<Record<string, RiskScoreResponse>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [sortKey, setSortKey] = useState<SortKey>("probability");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [pageInput, setPageInput] = useState("1");
+
+  // "Reviewing" / "Cleared" / "Escalated" get their own full-dataset view —
+  // see FULLY_TRACKED_STATUSES. "All statuses" and "Flagged" stay on the
+  // normal server-paginated path below.
+  const isTouchedMode = FULLY_TRACKED_STATUSES.includes(statusFilter as CaseStatus);
+  const touchedIds = useMemo(
+    () => (isTouchedMode ? getAccountsByStatus(statusFilter as CaseStatus) : []),
+    [isTouchedMode, statusFilter, getAccountsByStatus],
+  );
+  const [touchedRows, setTouchedRows] = useState<DisplayRow[]>([]);
+  const [touchedLoading, setTouchedLoading] = useState(false);
+  const [touchedError, setTouchedError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
 
-    getFlaggedAccounts(page, PAGE_SIZE)
-      .then(async (resp) => {
+    getFlaggedAccounts(page, PAGE_SIZE, sortBy, sortOrder)
+      .then((resp) => {
         if (cancelled) return;
         setListing(resp);
-        const entries = await Promise.all(
-          resp.accounts.map(async (a) => {
-            const detail = await getRiskScore(a.account_id);
-            return [a.account_id, detail] as const;
-          }),
-        );
-        if (cancelled) return;
-        setDetails(Object.fromEntries(entries));
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -53,61 +104,137 @@ export function Dashboard() {
     return () => {
       cancelled = true;
     };
+  }, [page, sortBy, sortOrder]);
+
+  useEffect(() => {
+    setPageInput(String(page));
   }, [page]);
 
-  const rows = useMemo(() => {
-    if (!listing) return [];
-    let filtered = listing.accounts.filter((a) => details[a.account_id]);
+  useEffect(() => {
+    if (!isTouchedMode) return;
+    let cancelled = false;
+    setTouchedLoading(true);
+    setTouchedError(null);
 
+    Promise.all(touchedIds.map((id) => getRiskScore(id)))
+      .then((results) => {
+        if (cancelled) return;
+        setTouchedRows(
+          results.map((r) => ({
+            account_id: r.account_id,
+            probability: r.probability,
+            total_degree: r.key_features.total_degree,
+            community_illicit_density: r.key_features.community_illicit_density,
+            cycle_count: r.key_features.cycle_count,
+          })),
+        );
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setTouchedError(e instanceof ApiError ? `${e.message} (HTTP ${e.status})` : String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setTouchedLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // touchedIds is a fresh array every render (getAccountsByStatus rebuilds
+    // it); .join(",") gives a stable, correct dependency instead.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTouchedMode, touchedIds.join(",")]);
+
+  const rows = useMemo((): DisplayRow[] => {
+    if (isTouchedMode) {
+      let filtered = touchedRows;
+      if (search.trim()) {
+        const q = search.trim().toLowerCase();
+        filtered = filtered.filter((a) => a.account_id.toLowerCase().includes(q));
+      }
+      // touchedRows is the COMPLETE matching set (not a page), so — unlike
+      // the bug this all started from — sorting it client-side is correct.
+      const getVal = SORT_VALUE[sortBy];
+      return [...filtered].sort((a, b) => {
+        const diff = getVal(a) - getVal(b);
+        return sortOrder === "asc" ? diff : -diff;
+      });
+    }
+
+    if (!listing) return [];
+    let filtered: DisplayRow[] = listing.accounts;
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       filtered = filtered.filter((a) => a.account_id.toLowerCase().includes(q));
     }
-    if (statusFilter !== "all") {
-      filtered = filtered.filter((a) => getStatus(a.account_id) === statusFilter);
+    if (statusFilter === "flagged") {
+      // Page-scoped on purpose — see the note rendered near the status
+      // dropdown. "Flagged" is everyone's default, so a complete search
+      // would require knowing every one of the 12,748 accounts' status,
+      // which the client only knows for accounts it has actually loaded.
+      filtered = filtered.filter((a) => getStatus(a.account_id) === "flagged");
     }
+    return filtered;
+  }, [isTouchedMode, touchedRows, listing, search, statusFilter, sortBy, sortOrder, getStatus]);
 
-    const withDetail = filtered.map((a) => ({ account: a, detail: details[a.account_id] }));
-    withDetail.sort((x, y) => {
-      const getVal = (d: RiskScoreResponse) =>
-        sortKey === "probability" ? d.probability : d.key_features[sortKey];
-      const diff = getVal(x.detail) - getVal(y.detail);
-      return sortDir === "asc" ? diff : -diff;
-    });
-    return withDetail;
-  }, [listing, details, search, statusFilter, sortKey, sortDir, getStatus]);
-
-  function toggleSort(key: SortKey) {
-    if (sortKey === key) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+  function toggleSort(key: FlaggedSortBy) {
+    if (sortBy === key) {
+      setSortOrder((d) => (d === "asc" ? "desc" : "asc"));
     } else {
-      setSortKey(key);
-      setSortDir("desc");
+      setSortBy(key);
+      setSortOrder("desc");
     }
+    setPage(1); // re-sorting starts from the top of the newly-ordered full set
   }
 
-  function sortArrow(key: SortKey) {
-    if (sortKey !== key) return "";
-    return sortDir === "asc" ? " ▲" : " ▼";
+  function sortArrow(key: FlaggedSortBy) {
+    if (sortBy !== key) return "";
+    return sortOrder === "asc" ? " ▲" : " ▼";
   }
+
+  function jumpToPage() {
+    const n = Number.parseInt(pageInput, 10);
+    const totalPages = listing?.total_pages ?? 1;
+    if (!Number.isFinite(n)) {
+      setPageInput(String(page));
+      return;
+    }
+    setPage(Math.min(Math.max(1, n), totalPages));
+  }
+
+  const totalPages = listing?.total_pages ?? 1;
+  const nearbyPages = pageWindow(page, totalPages);
+  const showLoading = isTouchedMode ? touchedLoading : loading;
+  const showError = isTouchedMode ? touchedError : error;
 
   return (
     <div className="dashboard">
       <div className="dashboard-header">
         <div>
           <h1>Flagged Accounts</h1>
-          {listing && (
+          {isTouchedMode ? (
             <p className="dashboard-subtitle">
-              {listing.total_flagged.toLocaleString()} accounts above threshold{" "}
-              <code>{listing.threshold.toFixed(4)}</code> — page {listing.page} of{" "}
-              {listing.total_pages.toLocaleString()}
+              Showing all <strong>{touchedRows.length}</strong> accounts marked{" "}
+              <strong>{statusFilter}</strong> — a complete search across every flagged account,
+              not just the current page.
             </p>
+          ) : (
+            listing && (
+              <p className="dashboard-subtitle">
+                {listing.total_flagged.toLocaleString()} accounts above threshold{" "}
+                <code>{listing.threshold.toFixed(4)}</code> — sorted by{" "}
+                <strong>{SORT_LABELS[listing.sort_by]}</strong> ({listing.sort_order}) — page{" "}
+                {listing.page} of {listing.total_pages.toLocaleString()}
+              </p>
+            )
           )}
         </div>
         <div className="dashboard-controls">
           <input
             className="search-input"
-            placeholder="Filter this page by account ID..."
+            placeholder={
+              isTouchedMode ? "Filter these results by account ID..." : "Filter this page by account ID..."
+            }
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -121,23 +248,28 @@ export function Dashboard() {
         </div>
       </div>
 
-      {error && <div className="banner banner-error">Failed to load: {error}</div>}
-      {loading && <div className="banner">Loading from live backend…</div>}
+      <p className="status-filter-note">
+        Reviewing / Cleared / Escalated search the full 12,748 accounts. Flagged only checks the
+        current page (it's everyone's default, so this can't be a complete search).
+      </p>
 
-      {!loading && !error && (
+      {showError && <div className="banner banner-error">Failed to load: {showError}</div>}
+      {showLoading && <div className="banner">Loading from live backend…</div>}
+
+      {!showLoading && !showError && (
         <>
           <table className="accounts-table">
             <thead>
               <tr>
                 <th>Account</th>
-                <th className="sortable" onClick={() => toggleSort("probability")}>
-                  Risk Score{sortArrow("probability")}
+                <th className="sortable" onClick={() => toggleSort("risk_score")}>
+                  Risk Score{sortArrow("risk_score")}
                 </th>
-                <th className="sortable" onClick={() => toggleSort("total_degree")}>
-                  Degree{sortArrow("total_degree")}
+                <th className="sortable" onClick={() => toggleSort("degree")}>
+                  Degree{sortArrow("degree")}
                 </th>
-                <th className="sortable" onClick={() => toggleSort("community_illicit_density")}>
-                  Community Illicit %{sortArrow("community_illicit_density")}
+                <th className="sortable" onClick={() => toggleSort("community_illicit_pct")}>
+                  Community Illicit %{sortArrow("community_illicit_pct")}
                 </th>
                 <th className="sortable" onClick={() => toggleSort("cycle_count")}>
                   Cycles{sortArrow("cycle_count")}
@@ -146,20 +278,20 @@ export function Dashboard() {
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ account, detail }) => (
+              {rows.map((account) => (
                 <tr key={account.account_id} onClick={() => navigate(`/accounts/${account.account_id}`)}>
                   <td className="mono">{account.account_id}</td>
                   <td>
                     <div className="risk-cell">
                       <div className="risk-bar-track">
-                        <div className="risk-bar-fill" style={{ width: `${detail.probability * 100}%` }} />
+                        <div className="risk-bar-fill" style={{ width: `${account.probability * 100}%` }} />
                       </div>
-                      <span className="mono">{detail.probability.toFixed(4)}</span>
+                      <span className="mono">{account.probability.toFixed(4)}</span>
                     </div>
                   </td>
-                  <td className="mono">{detail.key_features.total_degree.toFixed(0)}</td>
-                  <td className="mono">{(detail.key_features.community_illicit_density * 100).toFixed(2)}%</td>
-                  <td className="mono">{detail.key_features.cycle_count.toFixed(0)}</td>
+                  <td className="mono">{account.total_degree.toFixed(0)}</td>
+                  <td className="mono">{(account.community_illicit_density * 100).toFixed(2)}%</td>
+                  <td className="mono">{account.cycle_count.toFixed(0)}</td>
                   <td>
                     <StatusControl accountId={account.account_id} />
                   </td>
@@ -168,27 +300,62 @@ export function Dashboard() {
               {rows.length === 0 && (
                 <tr>
                   <td colSpan={6} className="empty-row">
-                    No accounts match the current filters on this page.
+                    {isTouchedMode
+                      ? `No accounts are currently marked ${statusFilter}.`
+                      : "No accounts match the current filters on this page."}
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
 
-          <div className="pagination">
-            <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-              ← Previous
-            </button>
-            <span>
-              Page {page} of {listing?.total_pages.toLocaleString()}
-            </span>
-            <button
-              disabled={!listing || page >= listing.total_pages}
-              onClick={() => setPage((p) => p + 1)}
-            >
-              Next →
-            </button>
-          </div>
+          {!isTouchedMode && (
+            <div className="pagination">
+              <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+                ← Previous
+              </button>
+
+              {nearbyPages[0] > 1 && (
+                <>
+                  <button onClick={() => setPage(1)}>1</button>
+                  {nearbyPages[0] > 2 && <span className="pagination-ellipsis">…</span>}
+                </>
+              )}
+              {nearbyPages.map((p) => (
+                <button key={p} className={p === page ? "pagination-current" : ""} onClick={() => setPage(p)}>
+                  {p}
+                </button>
+              ))}
+              {nearbyPages[nearbyPages.length - 1] < totalPages && (
+                <>
+                  {nearbyPages[nearbyPages.length - 1] < totalPages - 1 && (
+                    <span className="pagination-ellipsis">…</span>
+                  )}
+                  <button onClick={() => setPage(totalPages)}>{totalPages.toLocaleString()}</button>
+                </>
+              )}
+
+              <button disabled={!listing || page >= totalPages} onClick={() => setPage((p) => p + 1)}>
+                Next →
+              </button>
+
+              <span className="pagination-jump">
+                Go to page{" "}
+                <input
+                  type="number"
+                  min={1}
+                  max={totalPages}
+                  className="page-jump-input"
+                  value={pageInput}
+                  onChange={(e) => setPageInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") jumpToPage();
+                  }}
+                />
+                <button onClick={jumpToPage}>Go</button>
+              </span>
+            </div>
+          )}
         </>
       )}
     </div>

@@ -9,8 +9,10 @@
 import type {
   ExplanationResponse,
   FlaggedAccountsResponse,
+  FlaggedSortBy,
   ModelInfoResponse,
   RiskScoreResponse,
+  SortOrder,
   SubgraphResponse,
 } from "./types";
 
@@ -38,8 +40,15 @@ export function getModelInfo() {
   return request<ModelInfoResponse>("/model/info");
 }
 
-export function getFlaggedAccounts(page: number, pageSize: number) {
-  return request<FlaggedAccountsResponse>(`/accounts/flagged?page=${page}&page_size=${pageSize}`);
+export function getFlaggedAccounts(
+  page: number,
+  pageSize: number,
+  sortBy: FlaggedSortBy,
+  sortOrder: SortOrder,
+) {
+  return request<FlaggedAccountsResponse>(
+    `/accounts/flagged?page=${page}&page_size=${pageSize}&sort_by=${sortBy}&sort_order=${sortOrder}`,
+  );
 }
 
 export function getRiskScore(accountId: string) {

@@ -35,6 +35,9 @@ class FlaggedAccount(BaseModel):
     account_id: str
     probability: float
     predicted_label: str
+    total_degree: float
+    community_illicit_density: float
+    cycle_count: float
 
 
 class FlaggedAccountsResponse(BaseModel):
@@ -43,4 +46,6 @@ class FlaggedAccountsResponse(BaseModel):
     total_flagged: int
     total_pages: int
     threshold: float
+    sort_by: str = Field(..., description="Column the full flagged set was sorted by before pagination")
+    sort_order: str
     accounts: list[FlaggedAccount]

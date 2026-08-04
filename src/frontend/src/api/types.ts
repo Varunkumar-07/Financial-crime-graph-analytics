@@ -30,7 +30,13 @@ export interface FlaggedAccount {
   account_id: string;
   probability: number;
   predicted_label: "illicit" | "licit";
+  total_degree: number;
+  community_illicit_density: number;
+  cycle_count: number;
 }
+
+export type FlaggedSortBy = "risk_score" | "degree" | "community_illicit_pct" | "cycle_count";
+export type SortOrder = "asc" | "desc";
 
 export interface FlaggedAccountsResponse {
   page: number;
@@ -38,6 +44,8 @@ export interface FlaggedAccountsResponse {
   total_flagged: number;
   total_pages: number;
   threshold: number;
+  sort_by: FlaggedSortBy;
+  sort_order: SortOrder;
   accounts: FlaggedAccount[];
 }
 

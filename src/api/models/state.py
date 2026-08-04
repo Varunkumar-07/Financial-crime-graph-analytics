@@ -73,20 +73,29 @@ class AppState:
         self.auc_pr = float(average_precision_score(y_np[test_idx], self.proba_all[test_idx]))
         self.n_test_accounts = int(len(test_idx))
 
-        print("[startup] Sorting flagged accounts (proba >= threshold)...")
-        flagged_mask = self.proba_all >= self.threshold
-        flagged_idx = np.where(flagged_mask)[0]
-        flagged_idx = flagged_idx[np.argsort(-self.proba_all[flagged_idx])]
-        self.flagged_accounts = [
-            (self.data.accounts[i], float(self.proba_all[i])) for i in flagged_idx
-        ]
-
         print("[startup] Loading feature table and original graph...")
         self.features_df = pd.read_csv(
             PROJECT_ROOT / "data" / "processed" / "account_features.csv"
         ).set_index("account")
 
         self.account_to_idx = {a: i for i, a in enumerate(self.data.accounts)}
+
+        print("[startup] Building flagged accounts table (proba >= threshold)...")
+        flagged_mask = self.proba_all >= self.threshold
+        flagged_idx = np.where(flagged_mask)[0]
+        flagged_account_ids = [self.data.accounts[i] for i in flagged_idx]
+        # One row per flagged account, columns for every sortable field the
+        # /accounts/flagged endpoint supports — sorted server-side, on the
+        # full flagged set, on every request (see accounts.py). Kept as a
+        # DataFrame (not pre-sorted at startup) since 12,748 rows is cheap
+        # to re-sort per request and this avoids maintaining N precomputed
+        # orderings that could drift out of sync.
+        flagged_df = self.features_df.loc[
+            flagged_account_ids, ["total_degree", "community_illicit_density", "cycle_count"]
+        ].copy()
+        flagged_df["account"] = flagged_account_ids
+        flagged_df["probability"] = self.proba_all[flagged_idx]
+        self.flagged_df = flagged_df.reset_index(drop=True)
 
         print("[startup] Loading original MultiDiGraph...")
         self.G_multi = ga.load_graph()
