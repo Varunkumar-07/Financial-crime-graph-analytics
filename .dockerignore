@@ -1,0 +1,24 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+src/api/**/__pycache__/
+
+# Node
+src/frontend/node_modules/
+src/frontend/dist/
+
+# Data not needed in either image — the backend Dockerfile COPYs only the
+# 5 specific data/processed/ files it needs; everything else here would
+# just bloat the build context for no benefit (raw CSVs, backups, unused
+# classical-baseline model files).
+data/raw/
+data/processed.backup_*/
+data/processed/xgboost_baseline.json
+data/processed/random_forest_baseline.pkl
+
+# Docs / notebooks / scratch — not needed inside either image
+notebooks/
+scripts/.run/
+*.md
+.git/

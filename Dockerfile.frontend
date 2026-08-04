@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1
+#
+# Frontend (React/Vite) image. Multi-stage: stage 1 builds the static
+# production bundle with Node; stage 2 serves it with nginx (not the Vite
+# dev server, which isn't meant for production use and would also pull in
+# the whole Node toolchain unnecessarily). Final image is nginx + static
+# files only.
+
+FROM node:22-slim AS builder
+WORKDIR /build
+
+COPY src/frontend/package.json src/frontend/package-lock.json ./
+RUN npm ci
+
+COPY src/frontend/ ./
+# Baked in at build time — see api/client.ts for why this can't be a
+# container-runtime env var for a static SPA. "/api" routes browser
+# requests through this same image's own nginx reverse proxy (see
+# nginx.conf.template) rather than needing to know the backend's address
+# directly.
+ENV VITE_API_BASE_URL=/api
+RUN npm run build
+
+
+FROM nginx:1.27-alpine
+COPY --from=builder /build/dist /usr/share/nginx/html
+
+# .template (not conf.d directly): nginx's own entrypoint runs envsubst on
+# this at container START and writes the result to conf.d — see
+# nginx.conf.template's own comment for why this has to happen at runtime,
+# not build time.
+COPY src/frontend/nginx.conf.template /etc/nginx/templates/default.conf.template
+
+# Defaults for docker-compose/local runs only — Render overrides both via
+# its dashboard once each service's real values are known (BACKEND_URL
+# after the backend deploys; PORT is Render-assigned automatically).
+ENV BACKEND_URL=http://backend:8000
+ENV PORT=80
+EXPOSE 80
