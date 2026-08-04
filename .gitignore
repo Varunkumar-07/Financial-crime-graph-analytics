@@ -1,0 +1,11 @@
+venv/
+src/frontend/node_modules/
+src/frontend/dist/
+__pycache__/
+*.pyc
+scripts/.run/
+data/raw/
+data/processed/xgboost_baseline.json
+data/processed/random_forest_baseline.pkl
+data/processed.backup_*/
+.DS_Store
