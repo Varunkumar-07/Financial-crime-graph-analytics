@@ -1,6 +1,6 @@
 # Backend API Summary
 
-FastAPI service exposing the trained GraphSAGE model (test AUC-ROC 0.922, AUC-PR 0.274),
+FastAPI service exposing the trained GraphSAGE model (test AUC-ROC 0.918, AUC-PR 0.247),
 the transaction graph, and GNNExplainer-based explanations over HTTP.
 
 ## Running it
@@ -61,7 +61,7 @@ is computed once (`proba_all`) and the flagged-accounts list is pre-sorted once 
 | Method | Path | Description |
 |---|---|---|
 | GET | `/health` | Status, accounts loaded, cycles cached, active threshold |
-| GET | `/accounts/flagged?page=&page_size=` | Paginated accounts with probability ≥ threshold (0.8727), sorted descending |
+| GET | `/accounts/flagged?page=&page_size=` | Paginated accounts with probability ≥ threshold (0.8164), sorted descending |
 | GET | `/accounts/{account_id}/risk-score` | Predicted probability, label, and key engineered features |
 | GET | `/accounts/{account_id}/subgraph` | 1-2 hop ego-subgraph (nodes + edges) as JSON, ready for a frontend graph viz |
 | GET | `/accounts/{account_id}/explanation` | GNNExplainer top features/edges + cycle membership for that account |
@@ -85,13 +85,13 @@ generalization performance.
 
 **GET /health**
 ```json
-{"status": "ok", "model_loaded": true, "n_accounts": 515080, "n_cycles_cached": 10650, "threshold": 0.8726518750190735}
+{"status": "ok", "model_loaded": true, "n_accounts": 515080, "n_cycles_cached": 10650, "threshold": 0.8164215087890625}
 ```
 
 **GET /accounts/8000E1590/risk-score** (Phase 10's "confident true positive" case — probability matches exactly)
 ```json
 {"account_id": "8000E1590", "probability": 0.9824122786521912, "predicted_label": "illicit",
- "threshold": 0.8726518750190735, "true_label": "illicit",
+ "threshold": 0.8164215087890625, "true_label": "illicit",
  "key_features": {"in_degree": 6.0, "out_degree": 21.0, "cycle_count": 30.0, "community_illicit_density": 0.0229, "...": "..."}}
 ```
 

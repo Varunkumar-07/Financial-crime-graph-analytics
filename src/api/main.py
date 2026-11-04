@@ -40,17 +40,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Origins that may call this API directly from a browser. Needed whenever a
-# frontend calls this API cross-origin (local Vite dev server on a different
-# port; a containerized frontend published on a different host port). When
-# the frontend instead reaches the API via its own nginx reverse proxy
-# (same-origin from the browser's perspective — see frontend/nginx.conf and
-# docker-compose.yml), CORS isn't even invoked, but the setting is left
-# permissive there too so the API remains directly callable for
-# debugging/testing regardless of deployment shape.
+# Origins that may call this API directly from a browser. Needed because the
+# local Vite dev server runs on a different port from the API, so its
+# requests are cross-origin.
 # Configurable via env var — never hardcoded — because the right origin
-# list depends on deployment (local dev vs. docker-compose vs. a future
-# live host), and hardcoding it here would need a code change every time.
+# list depends on deployment (local dev vs. a future live host), and
+# hardcoding it here would need a code change every time.
 _default_origins = "http://localhost:5173,http://127.0.0.1:5173"
 CORS_ALLOWED_ORIGINS = [
     origin.strip()

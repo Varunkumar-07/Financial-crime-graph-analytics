@@ -2,49 +2,50 @@
 
 ## Setup
 - Feature table: 515,080 rows, 13 features (excluded: ['account', 'community_id'])
-- Split: 80/20 train/test, stratified on `is_illicit`, random_state=42
-- Train set: 412,064 rows (1.2343% positive)
+- Split: shared 70/10/20 train/validation/test split from splits.py (stratified on `is_illicit`, random_state=42) — identical to the GraphSAGE split
+- Train set: 360,556 rows (1.2342% positive)
+- Validation set: 51,508 rows (1.2348% positive)
 - Test set: 103,016 rows (1.2338% positive)
 - Class imbalance handling: class weighting only (no SMOTE/oversampling). XGBoost `scale_pos_weight`=80.02 (train neg/pos ratio); Random Forest `class_weight='balanced'`.
 - `in_out_amount_ratio` NaNs (accounts that never sent) imputed with -1 (an impossible value for the true ratio, so tree splits isolate this group cleanly).
 - `community_id` excluded from features (arbitrary high-cardinality label; `community_illicit_density` and `community_size` are the informative derivatives, per Phase 6).
 
 ## Threshold selection rationale
-Rather than the default 0.5 cutoff, the reported "chosen" threshold for each model maximizes the F2-score (recall weighted 4x more heavily than precision) on the test set's precision-recall curve. This reflects that in an AML screening context, missing an illicit account (false negative) is typically costlier than an extra manual review (false positive). Both the default-0.5 and F2-optimal metrics are reported below for comparison. Note: for a production pipeline the threshold should be tuned on a held-out validation split rather than the test set itself to avoid threshold-selection leakage — this baseline uses the test set directly for simplicity and should be revisited.
+Rather than the default 0.5 cutoff, the reported "chosen" threshold for each model maximizes the F2-score (recall weighted 4x more heavily than precision) on the VALIDATION set's precision-recall curve, and is then applied unchanged to the test set — the same protocol as GraphSAGE, so no test label influences any reported threshold. Both the default-0.5 and F2-optimal metrics are reported below.
 
 ## Evaluation
 
 ### XGBoost
 
-- AUC-ROC: 0.8658
-- AUC-PR (average precision): 0.1459
+- AUC-ROC: 0.8534
+- AUC-PR (average precision): 0.1229
 
-**At default threshold 0.5:** precision=0.0499, recall=0.6971, f1=0.0931
+**At default threshold 0.5:** precision=0.0476, recall=0.6577, f1=0.0887
 
-**At chosen threshold 0.7515 (maximizes F2 — weights recall 4x more than precision, since missing an illicit account is costlier than a false positive here):** precision=0.1084, recall=0.4052, f1=0.1710, f2=0.2618
+**At chosen threshold 0.7352 (maximizes F2 on the validation set — recall weighted 4x more than precision):** precision=0.0918, recall=0.3698, f1=0.1470 (validation F2=0.2479)
 
 Confusion matrix at chosen threshold:
 
 | | Predicted licit | Predicted illicit |
 |---|---|---|
-| Actual licit | 97,509 (TN) | 4,236 (FP) |
-| Actual illicit | 756 (FN) | 515 (TP) |
+| Actual licit | 97,093 (TN) | 4,652 (FP) |
+| Actual illicit | 801 (FN) | 470 (TP) |
 
 ### Random Forest
 
-- AUC-ROC: 0.8561
-- AUC-PR (average precision): 0.0976
+- AUC-ROC: 0.8470
+- AUC-PR (average precision): 0.0864
 
-**At default threshold 0.5:** precision=0.0497, recall=0.6483, f1=0.0923
+**At default threshold 0.5:** precision=0.0509, recall=0.5987, f1=0.0939
 
-**At chosen threshold 0.6886 (maximizes F2 — weights recall 4x more than precision, since missing an illicit account is costlier than a false positive here):** precision=0.0923, recall=0.3525, f1=0.1463, f2=0.2254
+**At chosen threshold 0.6070 (maximizes F2 on the validation set — recall weighted 4x more than precision):** precision=0.0673, recall=0.4186, f1=0.1159 (validation F2=0.2077)
 
 Confusion matrix at chosen threshold:
 
 | | Predicted licit | Predicted illicit |
 |---|---|---|
-| Actual licit | 97,338 (TN) | 4,407 (FP) |
-| Actual illicit | 823 (FN) | 448 (TP) |
+| Actual licit | 94,371 (TN) | 7,374 (FP) |
+| Actual illicit | 739 (FN) | 532 (TP) |
 
 ## Feature importance
 
@@ -52,23 +53,23 @@ XGBoost importance = gain-based, normalized to sum to 1. Random Forest importanc
 
 | Feature | XGB gain (norm.) | RF importance | Avg rank |
 |---|---|---|---|
-| total_degree | 0.2744 | 0.1436 | 1.5 |
-| community_illicit_density | 0.2211 | 0.1805 | 1.5 |
-| in_degree | 0.0580 | 0.0914 | 5.0 |
-| total_received | 0.0653 | 0.0899 | 5.0 |
-| transaction_count | 0.0497 | 0.1156 | 5.5 |
-| out_degree | 0.0675 | 0.0568 | 7.0 |
-| cycle_count | 0.0793 | 0.0108 | 7.5 |
-| in_out_amount_ratio | 0.0428 | 0.0794 | 8.0 |
-| betweenness | 0.0577 | 0.0189 | 9.0 |
-| community_size | 0.0256 | 0.0809 | 9.0 |
-| total_sent | 0.0305 | 0.0583 | 9.5 |
-| avg_transaction_amount | 0.0280 | 0.0642 | 9.5 |
-| cycle_flag | 0.0000 | 0.0098 | 13.0 |
+| total_degree | 0.4207 | 0.1470 | 1.0 |
+| community_size | 0.0770 | 0.1035 | 3.0 |
+| transaction_count | 0.0486 | 0.1335 | 4.5 |
+| in_degree | 0.0590 | 0.1009 | 5.0 |
+| out_degree | 0.0613 | 0.0707 | 6.5 |
+| cycle_count | 0.0774 | 0.0105 | 7.0 |
+| total_received | 0.0464 | 0.0912 | 7.0 |
+| in_out_amount_ratio | 0.0464 | 0.0884 | 7.0 |
+| betweenness | 0.0603 | 0.0204 | 8.0 |
+| community_illicit_density | 0.0393 | 0.0857 | 8.5 |
+| avg_transaction_amount | 0.0306 | 0.0724 | 10.0 |
+| total_sent | 0.0331 | 0.0666 | 10.5 |
+| cycle_flag | 0.0000 | 0.0093 | 13.0 |
 
 ## Comparison to Phase 6 correlation findings
-- Top 5 features by average model rank: ['total_degree', 'community_illicit_density', 'in_degree', 'total_received', 'transaction_count']
+- Top 5 features by average model rank: ['total_degree', 'community_size', 'transaction_count', 'in_degree', 'out_degree']
 - Phase 6 flagged `community_illicit_density` and `cycle_count` as promising nonlinear signals (weak linear correlation but large mean gap between classes).
-- **Confirmed**: ['community_illicit_density'] rank in the top 5 for at least one model — the tree-based models did pick up on this nonlinear signal that raw correlation understated.
+- Neither flagged feature reached the top 5 in these models — see full importance table above for their actual rank.
 
-Total runtime: 11.6s
+Total runtime: 11.0s

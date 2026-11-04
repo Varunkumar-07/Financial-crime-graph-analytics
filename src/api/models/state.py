@@ -19,14 +19,14 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 from sklearn.metrics import average_precision_score, roc_auc_score
-from sklearn.model_selection import train_test_split
 
 SRC_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SRC_DIR))
 
 import graph_analysis as ga  # noqa: E402
 from explainability import get_cycles_cached  # noqa: E402
-from train_gnn import GraphSAGE, RANDOM_STATE, f2_optimal_threshold, preprocess_features  # noqa: E402
+from splits import split_indices  # noqa: E402
+from train_gnn import GraphSAGE, f2_optimal_threshold, preprocess_features  # noqa: E402
 
 PROJECT_ROOT = SRC_DIR.parent
 
@@ -41,12 +41,8 @@ class AppState:
         self.data = torch.load(PROJECT_ROOT / "data" / "processed" / "pyg_data.pt", weights_only=False)
         ckpt = torch.load(PROJECT_ROOT / "data" / "processed" / "graphsage_baseline.pt", weights_only=False)
 
-        idx = np.arange(self.data.num_nodes)
         y_np = self.data.y.numpy()
-        train_idx, test_idx = train_test_split(idx, test_size=0.2, stratify=y_np, random_state=RANDOM_STATE)
-        train_idx, val_idx = train_test_split(
-            train_idx, test_size=0.125, stratify=y_np[train_idx], random_state=RANDOM_STATE
-        )
+        train_idx, val_idx, test_idx = split_indices(y_np)
 
         print("[startup] Preprocessing features and loading model...")
         x_np = preprocess_features(self.data.x.numpy().copy(), self.data.feature_cols, train_idx)

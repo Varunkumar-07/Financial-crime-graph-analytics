@@ -17,6 +17,17 @@ functions and parameters (k=500 betweenness sampling, Louvain seed=42,
 120s-capped giant-SCC cycle sampling). See graph_analysis.py for full
 methodology notes and caveats on these approximations.
 
+community_illicit_density is label-derived, so it is computed from
+TRAINING-split labels only (see splits.py): validation/test accounts get
+the illicit fraction among training accounts in their Louvain community;
+training accounts get the same quantity computed out-of-fold (5 folds),
+so no account's own label ever enters its own feature value.
+
+Cycle participation is read from the shared disk cache
+(graph_analysis.get_cycle_analysis_cached), the same cycle set used by
+the explainability layer and the API, so cycle_count always agrees with
+the cycle membership shown to analysts.
+
 No modeling here — feature construction and sanity reporting only.
 
 Run from the project root with the venv activated:
@@ -31,9 +42,11 @@ from pathlib import Path
 import networkx as nx
 import numpy as np
 import pandas as pd
+from sklearn.model_selection import StratifiedKFold
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import graph_analysis as ga  # reuse graph construction / centrality / cycle logic
+from splits import RANDOM_STATE, split_indices
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RAW_CSV = PROJECT_ROOT / "data" / "raw" / "HI-Small_Trans.csv"
@@ -85,39 +98,45 @@ def compute_transaction_aggregates(df: pd.DataFrame) -> pd.DataFrame:
     ]
 
 
-def compute_cycle_participation(simple: nx.DiGraph) -> dict:
-    print("  2- and 3-cycles (exact, whole graph)...")
-    t0 = time.time()
-    two_cycles, three_cycles = ga.find_2_and_3_cycles(simple)
-    print(f"    {time.time() - t0:.1f}s: {len(two_cycles)} 2-cycles, {len(three_cycles)} 3-cycles")
-
-    print("  Strongly connected components...")
-    sccs = list(nx.strongly_connected_components(simple))
-    nontrivial_sccs = [s for s in sccs if len(s) > 1]
-    giant_scc = max(nontrivial_sccs, key=len)
-    small_sccs = [s for s in nontrivial_sccs if s is not giant_scc]
-    print(f"    giant SCC size={len(giant_scc):,}, {len(small_sccs)} small SCCs")
-
-    print(f"  4-6 length cycles in {len(small_sccs)} small SCCs (exact)...")
-    t0 = time.time()
-    small_scc_cycles = ga.find_small_scc_cycles(simple, small_sccs)
-    print(f"    {time.time() - t0:.1f}s: {len(small_scc_cycles)} cycles")
-
-    print(f"  4-6 length cycles in giant SCC ({ga.GIANT_SCC_TIME_BUDGET_SEC}s cap, PARTIAL)...")
-    t0 = time.time()
-    giant_scc_cycles, hit_cap = ga.find_giant_scc_cycles_sampled(
-        simple, giant_scc, ga.GIANT_SCC_TIME_BUDGET_SEC
-    )
-    print(f"    {time.time() - t0:.1f}s: {len(giant_scc_cycles)} cycles "
-          f"({'CAPPED — partial sample' if hit_cap else 'exhausted'})")
-
-    all_cycles = two_cycles | three_cycles | small_scc_cycles | giant_scc_cycles
-
+def compute_cycle_participation(simple: nx.DiGraph):
+    analysis = ga.get_cycle_analysis_cached(simple)
+    all_cycles = analysis["all_cycles"]
     cycle_count = {}
     for cyc in all_cycles:
         for node in cyc:
             cycle_count[node] = cycle_count.get(node, 0) + 1
     return cycle_count, len(all_cycles)
+
+
+def train_only_community_density(community_id: np.ndarray, is_illicit: np.ndarray,
+                                  train_idx: np.ndarray, n_folds: int = 5) -> np.ndarray:
+    """Illicit fraction among TRAINING accounts in the same community.
+
+    Validation/test accounts: computed from all training labels.
+    Training accounts: out-of-fold — the training set is split into
+    n_folds stratified folds, and each fold's value is computed only from
+    the other folds' labels. (Plain leave-one-out is avoided: within a
+    community it gives illicit members a systematically lower value than
+    licit ones, so a tree model can decode the label from it.)
+    Communities with no qualifying labelled members fall back to the
+    global training illicit rate. Only labels at train_idx are read.
+    """
+    n_comm = int(community_id.max()) + 1
+    prior = is_illicit[train_idx].mean()
+
+    def density_from(source_idx, target_idx):
+        cnt = np.bincount(community_id[source_idx], minlength=n_comm).astype(float)
+        pos = np.bincount(community_id[source_idx], weights=is_illicit[source_idx].astype(float),
+                          minlength=n_comm)
+        c = community_id[target_idx]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(cnt[c] > 0, pos[c] / cnt[c], prior)
+
+    density = density_from(train_idx, np.arange(len(community_id)))
+    folds = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=RANDOM_STATE)
+    for fit_pos, hold_pos in folds.split(train_idx, is_illicit[train_idx]):
+        density[train_idx[hold_pos]] = density_from(train_idx[fit_pos], train_idx[hold_pos])
+    return density
 
 
 def main() -> None:
@@ -146,11 +165,8 @@ def main() -> None:
 
     node_to_comm = {}
     comm_size = {}
-    comm_illicit_density = {}
     for i, comm in enumerate(communities):
         comm_size[i] = len(comm)
-        illicit_in_comm = len(comm & illicit_nodes)
-        comm_illicit_density[i] = illicit_in_comm / len(comm)
         for n in comm:
             node_to_comm[n] = i
 
@@ -177,7 +193,8 @@ def main() -> None:
 
     features["community_id"] = features["account"].map(node_to_comm)
     features["community_size"] = features["community_id"].map(comm_size)
-    features["community_illicit_density"] = features["community_id"].map(comm_illicit_density)
+    # Label-derived feature: filled in below, once is_illicit and the split exist.
+    features["community_illicit_density"] = np.nan
 
     features["cycle_count"] = features["account"].map(cycle_count).fillna(0).astype(int)
     features["cycle_flag"] = (features["cycle_count"] > 0).astype(int)
@@ -188,6 +205,11 @@ def main() -> None:
     ].fillna(0)
 
     features["is_illicit"] = features["account"].isin(illicit_nodes).astype(int)
+
+    train_idx, _, _ = split_indices(features["is_illicit"].values)
+    features["community_illicit_density"] = train_only_community_density(
+        features["community_id"].values, features["is_illicit"].values, train_idx
+    )
 
     FEATURES_CSV.parent.mkdir(parents=True, exist_ok=True)
     features.to_csv(FEATURES_CSV, index=False)
@@ -232,7 +254,11 @@ def main() -> None:
         "(recomputed with the same parameters as graph_analysis.py).",
         "- Louvain communities: recomputed with seed=42 on the undirected, "
         "transaction-count-weighted graph.",
-        f"- Cycle participation (length 2-6): {n_total_cycles:,} total cycles found — exact "
+        "- community_illicit_density: computed from TRAINING-split labels only (5-fold "
+        "out-of-fold for training accounts, so no account's own label enters its own value); "
+        "communities with no labelled training members use the global training illicit rate. "
+        "No validation/test label enters any feature.",
+        f"- Cycle participation (length 2-6): {n_total_cycles:,} total cycles (shared cache) — exact "
         "for 2/3-cycles and small-SCC 4-6 cycles, PARTIAL SAMPLE (120s cap) for the giant "
         "17,075-node SCC. cycle_count is therefore a lower bound for accounts in that component.",
         f"- Observed dataset window: {total_days:.3f} days (computed directly from min/max "

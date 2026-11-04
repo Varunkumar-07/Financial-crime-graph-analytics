@@ -11,16 +11,18 @@ explainability → FastAPI backend → React/Cytoscape.js dashboard.
 - `data/processed/` — built graph, feature table, trained models, cycle cache
 - `notebooks/` — per-phase summaries (EDA, graph analysis, feature engineering, model
   evaluation, explainability, API docs)
-- `src/` — pipeline scripts (`eda.py`, `build_graph.py`, `graph_analysis.py`,
+- `src/` — pipeline scripts (`eda.py`, `build_graph.py`, `graph_analysis.py`, `splits.py`,
   `feature_engineering.py`, `train_baseline.py`, `train_gnn.py`, `explainability.py`)
 - `src/api/` — FastAPI backend (see `notebooks/api_summary.md`)
 - `src/frontend/` — React + Vite + Cytoscape.js dashboard
 
 ## Status
 
-All phases through the frontend dashboard are complete. GraphSAGE (test AUC-ROC 0.922,
-AUC-PR 0.274) outperforms the XGBoost baseline (AUC-ROC 0.865, AUC-PR 0.146). Docker/
-deployment has not been started.
+All phases through the frontend dashboard are complete. On a shared 70/10/20 split
+(`src/splits.py`) with leakage-free features and validation-selected thresholds, GraphSAGE
+(test AUC-ROC 0.918, AUC-PR 0.247) outperforms XGBoost (AUC-ROC 0.853, AUC-PR 0.123) and
+Random Forest (AUC-ROC 0.847, AUC-PR 0.086). Deployment is local only (Docker was explored
+and rolled back).
 
 ## Running the full stack locally
 

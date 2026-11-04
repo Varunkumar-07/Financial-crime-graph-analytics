@@ -1,0 +1,142 @@
+[
+  {
+    "account": "80605A3E0",
+    "case_type": "true_positive_confident",
+    "label": "confident true positive",
+    "proba": 0.9982446432113647,
+    "y_true": 1,
+    "threshold": 0.8164215087890625,
+    "png": "80605A3E0_true_positive_confident.png",
+    "radius": 1,
+    "n_nodes_drawn": 8,
+    "cycle_lengths": [
+      2
+    ],
+    "n_neighbours": 7,
+    "n_illicit_neighbours": 2,
+    "top_features": [
+      "in_degree",
+      "cycle_flag",
+      "out_degree",
+      "total_degree",
+      "avg_transaction_amount"
+    ],
+    "features": {
+      "in_degree": 7.0,
+      "out_degree": 3.0,
+      "total_degree": 10.0,
+      "betweenness": 8.749483896937292e-07,
+      "community_size": 523.0,
+      "community_illicit_density": 0.0529100529100529,
+      "cycle_count": 1.0,
+      "total_sent": 130477.36000000002,
+      "total_received": 139791.65,
+      "transaction_count": 13.0
+    }
+  },
+  {
+    "account": "80F2591D0",
+    "case_type": "true_positive_marginal",
+    "label": "marginal true positive",
+    "proba": 0.8178237676620483,
+    "y_true": 1,
+    "threshold": 0.8164215087890625,
+    "png": "80F2591D0_true_positive_marginal.png",
+    "radius": 2,
+    "n_nodes_drawn": 10,
+    "cycle_lengths": [
+      2
+    ],
+    "n_neighbours": 6,
+    "n_illicit_neighbours": 2,
+    "top_features": [
+      "in_degree",
+      "out_degree",
+      "in_out_amount_ratio",
+      "cycle_flag",
+      "total_degree"
+    ],
+    "features": {
+      "in_degree": 7.0,
+      "out_degree": 2.0,
+      "total_degree": 9.0,
+      "betweenness": 0.0,
+      "community_size": 57698.0,
+      "community_illicit_density": 0.0139682855296515,
+      "cycle_count": 1.0,
+      "total_sent": 918.52,
+      "total_received": 43229.35,
+      "transaction_count": 19.0
+    }
+  },
+  {
+    "account": "80FC30F60",
+    "case_type": "false_negative",
+    "label": "false negative",
+    "proba": 0.7916421294212341,
+    "y_true": 1,
+    "threshold": 0.8164215087890625,
+    "png": "80FC30F60_false_negative.png",
+    "radius": 2,
+    "n_nodes_drawn": 30,
+    "cycle_lengths": [
+      2
+    ],
+    "n_neighbours": 4,
+    "n_illicit_neighbours": 1,
+    "top_features": [
+      "total_degree",
+      "community_illicit_density",
+      "in_degree",
+      "out_degree",
+      "betweenness"
+    ],
+    "features": {
+      "in_degree": 4.0,
+      "out_degree": 3.0,
+      "total_degree": 7.0,
+      "betweenness": 2.973077216783995e-06,
+      "community_size": 15618.0,
+      "community_illicit_density": 0.0117098161192937,
+      "cycle_count": 1.0,
+      "total_sent": 1459.29,
+      "total_received": 22115.58,
+      "transaction_count": 14.0
+    }
+  },
+  {
+    "account": "80C7FA5E0",
+    "case_type": "false_positive",
+    "label": "false positive",
+    "proba": 0.9988932013511658,
+    "y_true": 0,
+    "threshold": 0.8164215087890625,
+    "png": "80C7FA5E0_false_positive.png",
+    "radius": 2,
+    "n_nodes_drawn": 7,
+    "cycle_lengths": [
+      2
+    ],
+    "n_neighbours": 4,
+    "n_illicit_neighbours": 1,
+    "top_features": [
+      "total_received",
+      "in_degree",
+      "cycle_flag",
+      "total_degree",
+      "cycle_count"
+    ],
+    "features": {
+      "in_degree": 5.0,
+      "out_degree": 2.0,
+      "total_degree": 7.0,
+      "betweenness": 0.0,
+      "community_size": 5.0,
+      "community_illicit_density": 0.3333333333333333,
+      "cycle_count": 1.0,
+      "total_sent": 5354.02,
+      "total_received": 16443.64,
+      "transaction_count": 9.0
+    }
+  }
+]

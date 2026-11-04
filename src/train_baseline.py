@@ -24,7 +24,9 @@ Run from the project root with the venv activated:
     python src/train_baseline.py
 """
 
+import json
 import pickle
+import sys
 import time
 from pathlib import Path
 
@@ -41,17 +43,19 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import train_test_split
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from splits import RANDOM_STATE, split_indices
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FEATURES_CSV = PROJECT_ROOT / "data" / "processed" / "account_features.csv"
 XGB_MODEL_PATH = PROJECT_ROOT / "data" / "processed" / "xgboost_baseline.json"
 RF_MODEL_PATH = PROJECT_ROOT / "data" / "processed" / "random_forest_baseline.pkl"
 REPORT_MD = PROJECT_ROOT / "notebooks" / "baseline_model_summary.md"
+METRICS_JSON = PROJECT_ROOT / "data" / "processed" / "baseline_metrics.json"
 
 TARGET = "is_illicit"
 EXCLUDED_COLS = ["account", "community_id", TARGET]
-RANDOM_STATE = 42
 
 
 def load_features() -> pd.DataFrame:
@@ -74,11 +78,13 @@ def f2_optimal_threshold(y_true, y_proba):
     return thresholds[best_idx], f2[best_idx], precision[best_idx], recall[best_idx]
 
 
-def evaluate_model(name, y_true, y_proba):
+def evaluate_model(name, y_true, y_proba, y_val, val_proba):
+    """Test-set metrics. The F2-optimal threshold is chosen on the
+    VALIDATION set and only applied to the test set."""
     auc_roc = roc_auc_score(y_true, y_proba)
     auc_pr = average_precision_score(y_true, y_proba)
 
-    thresh, f2_at_thresh, _, _ = f2_optimal_threshold(y_true, y_proba)
+    thresh, f2_at_thresh, _, _ = f2_optimal_threshold(y_val, val_proba)
     y_pred_default = (y_proba >= 0.5).astype(int)
     y_pred_chosen = (y_proba >= thresh).astype(int)
 
@@ -119,11 +125,10 @@ def format_eval_section(ev: dict) -> list:
         f"recall={ev['metrics_default']['recall']:.4f}, f1={ev['metrics_default']['f1']:.4f}",
         "",
         f"**At chosen threshold {ev['threshold_chosen']:.4f} "
-        f"(maximizes F2 — weights recall 4x more than precision, since missing an "
-        f"illicit account is costlier than a false positive here):** "
+        f"(maximizes F2 on the validation set — recall weighted 4x more than precision):** "
         f"precision={ev['metrics_chosen']['precision']:.4f}, "
         f"recall={ev['metrics_chosen']['recall']:.4f}, "
-        f"f1={ev['metrics_chosen']['f1']:.4f}, f2={ev['f2_at_chosen']:.4f}",
+        f"f1={ev['metrics_chosen']['f1']:.4f} (validation F2={ev['f2_at_chosen']:.4f})",
         "",
         "Confusion matrix at chosen threshold:",
         "",
@@ -147,10 +152,14 @@ def main() -> None:
     X = df[feature_cols]
     y = df[TARGET]
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, stratify=y, random_state=RANDOM_STATE
-    )
+    # Shared 70/10/20 split (splits.py) — identical to the GraphSAGE split,
+    # so all three models are scored on the same test accounts.
+    train_idx, val_idx, test_idx = split_indices(y.values)
+    X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
+    X_val, y_val = X.iloc[val_idx], y.iloc[val_idx]
+    X_test, y_test = X.iloc[test_idx], y.iloc[test_idx]
     print(f"  Train: {len(X_train):,} rows ({y_train.mean()*100:.4f}% positive)")
+    print(f"  Val:   {len(X_val):,} rows ({y_val.mean()*100:.4f}% positive)")
     print(f"  Test:  {len(X_test):,} rows ({y_test.mean()*100:.4f}% positive)")
 
     n_pos = y_train.sum()
@@ -191,8 +200,10 @@ def main() -> None:
     xgb_proba = xgb_model.predict_proba(X_test)[:, 1]
     rf_proba = rf_model.predict_proba(X_test)[:, 1]
 
-    xgb_eval = evaluate_model("XGBoost", y_test, xgb_proba)
-    rf_eval = evaluate_model("Random Forest", y_test, rf_proba)
+    xgb_eval = evaluate_model("XGBoost", y_test, xgb_proba, y_val,
+                              xgb_model.predict_proba(X_val)[:, 1])
+    rf_eval = evaluate_model("Random Forest", y_test, rf_proba, y_val,
+                             rf_model.predict_proba(X_val)[:, 1])
 
     print(f"XGBoost: AUC-ROC={xgb_eval['auc_roc']:.4f}, AUC-PR={xgb_eval['auc_pr']:.4f}")
     print(f"Random Forest: AUC-ROC={rf_eval['auc_roc']:.4f}, AUC-PR={rf_eval['auc_pr']:.4f}")
@@ -221,6 +232,18 @@ def main() -> None:
         pickle.dump(rf_model, f, protocol=pickle.HIGHEST_PROTOCOL)
     print(f"Saved models to {XGB_MODEL_PATH} and {RF_MODEL_PATH}")
 
+    metrics = {
+        ev["name"]: {
+            "auc_roc": ev["auc_roc"], "auc_pr": ev["auc_pr"],
+            "threshold": float(ev["threshold_chosen"]),
+            **ev["metrics_chosen"],
+            "confusion_matrix": ev["confusion_matrix_chosen"].tolist(),
+        }
+        for ev in (xgb_eval, rf_eval)
+    }
+    metrics["feature_importance_xgb_gain"] = xgb_importance.sort_values(ascending=False).to_dict()
+    METRICS_JSON.write_text(json.dumps(metrics, indent=2))
+
     # --- Report ---
     lines = [
         "# Baseline Model Summary",
@@ -228,8 +251,10 @@ def main() -> None:
         "## Setup",
         f"- Feature table: {df.shape[0]:,} rows, {len(feature_cols)} features "
         f"(excluded: {EXCLUDED_COLS[:-1]})",
-        "- Split: 80/20 train/test, stratified on `is_illicit`, random_state=42",
+        "- Split: shared 70/10/20 train/validation/test split from splits.py (stratified on "
+        "`is_illicit`, random_state=42) — identical to the GraphSAGE split",
         f"- Train set: {len(X_train):,} rows ({y_train.mean()*100:.4f}% positive)",
+        f"- Validation set: {len(X_val):,} rows ({y_val.mean()*100:.4f}% positive)",
         f"- Test set: {len(X_test):,} rows ({y_test.mean()*100:.4f}% positive)",
         f"- Class imbalance handling: class weighting only (no SMOTE/oversampling). "
         f"XGBoost `scale_pos_weight`={scale_pos_weight:.2f} (train neg/pos ratio); "
@@ -241,13 +266,10 @@ def main() -> None:
         "",
         "## Threshold selection rationale",
         "Rather than the default 0.5 cutoff, the reported \"chosen\" threshold for each model "
-        "maximizes the F2-score (recall weighted 4x more heavily than precision) on the test "
-        "set's precision-recall curve. This reflects that in an AML screening context, missing "
-        "an illicit account (false negative) is typically costlier than an extra manual review "
-        "(false positive). Both the default-0.5 and F2-optimal metrics are reported below for "
-        "comparison. Note: for a production pipeline the threshold should be tuned on a held-out "
-        "validation split rather than the test set itself to avoid threshold-selection leakage — "
-        "this baseline uses the test set directly for simplicity and should be revisited.",
+        "maximizes the F2-score (recall weighted 4x more heavily than precision) on the "
+        "VALIDATION set's precision-recall curve, and is then applied unchanged to the test set "
+        "— the same protocol as GraphSAGE, so no test label influences any reported threshold. "
+        "Both the default-0.5 and F2-optimal metrics are reported below.",
         "",
         "## Evaluation",
         "",
@@ -277,8 +299,8 @@ def main() -> None:
         "",
         "## Comparison to Phase 6 correlation findings",
         f"- Top 5 features by average model rank: {top5}",
-        f"- Phase 6 flagged `community_illicit_density` and `cycle_count` as promising nonlinear "
-        f"signals (weak linear correlation but large mean gap between classes).",
+        "- Phase 6 flagged `community_illicit_density` and `cycle_count` as promising nonlinear "
+        "signals (weak linear correlation but large mean gap between classes).",
     ]
     if confirmed:
         lines.append(

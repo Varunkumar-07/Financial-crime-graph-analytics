@@ -1,5 +1,10 @@
 # Docker & Render-Readiness Summary
 
+> **Status: rolled back.** The Docker/Render work described below was explored and
+> then removed; the Dockerfiles, compose file and nginx config are no longer in the
+> repo. The project currently runs locally only (see the README). This note is kept
+> as a record of the approach.
+
 Two parts: containerizing the stack (Dockerfiles, compose, the seeded-dataset
 decision), and making those images actually deployable to Render (dynamic ports,
 runtime-configurable backend URL, git/size considerations). The second part exists

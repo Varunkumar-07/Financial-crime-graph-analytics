@@ -40,13 +40,13 @@
 
 ## Cycle detection (directed cycles, length 2-6)
 - 2-cycles (exact, whole graph): 3,693
-- 3-cycles (exact, whole graph): 6,837
+- 3-cycles (exact, whole graph): 563
 - 4-6 length cycles in small SCCs (exact): 119
-- 4-6 length cycles in giant SCC (120s sample, PARTIAL — lower bound): 5
-- **Total cycles found: 10,654** (10,649 exact + 5 sampled)
-- Cycles involving at least one illicit-labeled edge: 682 (6.40% of all cycles found)
+- 4-6 length cycles in giant SCC (120s sample, PARTIAL — lower bound): 29
+- **Total cycles found: 4,404** (4,375 exact + 29 sampled)
+- Cycles involving at least one illicit-labeled edge: 336 (7.63% of all cycles found)
 
 ## Visualization
-- Saved to `notebooks/suspicious_cluster.png`: Suspicious cycle (6-cycle, touches an illicit transaction)
+- Saved to `notebooks/suspicious_cluster.png`: Detected 6-account cycle containing a laundering transaction
 
-Total analysis runtime: 550.1s
+Total analysis runtime: 333.0s

@@ -21,11 +21,12 @@ Run from the project root with the venv activated:
     python src/train_gnn.py
 """
 
+import json
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn.functional as F
 from sklearn.metrics import (
@@ -37,15 +38,18 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import train_test_split
 from torch_geometric.nn import SAGEConv
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from splits import RANDOM_STATE, split_indices  # noqa: E402,F401 (RANDOM_STATE re-exported)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PYG_DATA_PATH = PROJECT_ROOT / "data" / "processed" / "pyg_data.pt"
 MODEL_PATH = PROJECT_ROOT / "data" / "processed" / "graphsage_baseline.pt"
 REPORT_MD = PROJECT_ROOT / "notebooks" / "gnn_baseline_summary.md"
+BASELINE_METRICS_JSON = PROJECT_ROOT / "data" / "processed" / "baseline_metrics.json"
+GNN_METRICS_JSON = PROJECT_ROOT / "data" / "processed" / "gnn_metrics.json"
 
-RANDOM_STATE = 42
 HIDDEN_DIM = 64
 N_EPOCHS = 200
 LR = 0.01
@@ -122,19 +126,12 @@ def main() -> None:
     data = torch.load(PYG_DATA_PATH, weights_only=False)
     print(f"  {data}")
 
-    # Same stratified 80/20 split logic as train_baseline.py, but as
-    # boolean masks over the single graph (standard PyG setup) rather
-    # than separate train/test row sets. A further 10% carve-out of
-    # train is held as a validation set for early stopping / threshold
-    # selection, so test-set metrics aren't used to tune anything.
-    idx = np.arange(data.num_nodes)
+    # Shared 70/10/20 split (splits.py), identical to train_baseline.py,
+    # expressed as masks over the single graph (standard PyG setup). The
+    # validation set drives early stopping and threshold selection, so
+    # test-set metrics aren't used to tune anything.
     y_np = data.y.numpy()
-    train_idx, test_idx = train_test_split(
-        idx, test_size=0.2, stratify=y_np, random_state=RANDOM_STATE
-    )
-    train_idx, val_idx = train_test_split(
-        train_idx, test_size=0.125, stratify=y_np[train_idx], random_state=RANDOM_STATE
-    )  # 0.125 * 0.8 = 0.1 of the full set
+    train_idx, val_idx, test_idx = split_indices(y_np)
 
     train_mask = torch.zeros(data.num_nodes, dtype=torch.bool)
     val_mask = torch.zeros(data.num_nodes, dtype=torch.bool)
@@ -248,6 +245,14 @@ def main() -> None:
                 "in_dim": data.num_node_features}, MODEL_PATH)
     print(f"Saved model to {MODEL_PATH}")
 
+    GNN_METRICS_JSON.write_text(json.dumps({
+        "auc_roc": auc_roc, "auc_pr": auc_pr, "threshold": float(thresh),
+        **chosen_metrics, "tp": int(tp), "fn": int(fn), "fp": int(fp), "tn": int(tn),
+        "n_test": int(len(test_idx)), "epochs": n_epochs_run,
+        "sec_per_epoch": train_time / n_epochs_run,
+    }, indent=2))
+    baselines = json.loads(BASELINE_METRICS_JSON.read_text())
+
     lines = [
         "# GNN Baseline Summary (GraphSAGE)",
         "",
@@ -263,8 +268,8 @@ def main() -> None:
         "random) for GraphSAGE, since features like total_sent range into the hundreds of "
         "millions and destabilized training.",
         "- Architecture: 3-layer GraphSAGE, hidden_dim=64, dropout=0.3, ReLU",
-        f"- Split: 80/20 train+val / test (stratified), with train further split "
-        "90/10 into train/val (stratified) for early stopping and threshold selection — "
+        "- Split: shared 70/10/20 train/validation/test split (splits.py, stratified), "
+        "identical to the classical baselines; validation drives early stopping and threshold selection — "
         "test set is never used for anything but final reported metrics",
         f"- Class imbalance handling: weighted cross-entropy loss, illicit class weight="
         f"{class_weights[1].item():.2f} (train neg/pos ratio) — the GNN analogue of "
@@ -293,12 +298,13 @@ def main() -> None:
         f"| Actual licit | {tn:,} (TN) | {fp:,} (FP) |",
         f"| Actual illicit | {fn:,} (FN) | {tp:,} (TP) |",
         "",
-        "## Comparison to classical baselines (Phase 7)",
+        "## Comparison to classical baselines (same test set)",
         "",
         "| Model | AUC-ROC | AUC-PR |",
         "|---|---|---|",
-        f"| XGBoost | 0.8650 | 0.1455 |",
-        f"| Random Forest | 0.8560 | 0.1019 |",
+        f"| XGBoost | {baselines['XGBoost']['auc_roc']:.4f} | {baselines['XGBoost']['auc_pr']:.4f} |",
+        f"| Random Forest | {baselines['Random Forest']['auc_roc']:.4f} | "
+        f"{baselines['Random Forest']['auc_pr']:.4f} |",
         f"| GraphSAGE | {auc_roc:.4f} | {auc_pr:.4f} |",
         "",
         f"Total runtime: {time.time() - t_start:.1f}s",

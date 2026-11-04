@@ -1,0 +1,53 @@
+{
+  "XGBoost": {
+    "auc_roc": 0.8534377125455066,
+    "auc_pr": 0.12288550573740475,
+    "threshold": 0.7352259159088135,
+    "precision": 0.09176103084732526,
+    "recall": 0.3697875688434304,
+    "f1": 0.14703582042859378,
+    "confusion_matrix": [
+      [
+        97093,
+        4652
+      ],
+      [
+        801,
+        470
+      ]
+    ]
+  },
+  "Random Forest": {
+    "auc_roc": 0.8470149664901366,
+    "auc_pr": 0.08636711432806715,
+    "threshold": 0.6069610810343143,
+    "precision": 0.06729066531748039,
+    "recall": 0.41856805664830843,
+    "f1": 0.11594202898550725,
+    "confusion_matrix": [
+      [
+        94371,
+        7374
+      ],
+      [
+        739,
+        532
+      ]
+    ]
+  },
+  "feature_importance_xgb_gain": {
+    "total_degree": 0.4207358888638927,
+    "cycle_count": 0.07736895528291003,
+    "community_size": 0.07696125993618846,
+    "out_degree": 0.06127782947366657,
+    "betweenness": 0.0602661174095899,
+    "in_degree": 0.05895557497054097,
+    "transaction_count": 0.04857596143914497,
+    "in_out_amount_ratio": 0.04644894836308839,
+    "total_received": 0.046425655835811167,
+    "community_illicit_density": 0.03926583933125822,
+    "total_sent": 0.03309670215730716,
+    "avg_transaction_amount": 0.030621266936601495,
+    "cycle_flag": 0.0
+  }
+}

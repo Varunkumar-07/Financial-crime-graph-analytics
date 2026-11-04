@@ -35,8 +35,11 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import networkx as nx
+import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 GRAPH_PATH = PROJECT_ROOT / "data" / "processed" / "transaction_graph.gpickle"
@@ -105,6 +108,8 @@ def find_2_and_3_cycles(simple: nx.DiGraph):
 
     three = set()
     for u, v in edge_set:
+        if u == v:  # a self-loop edge would yield degenerate (u, u, w) "3-cycles"
+            continue
         for w in simple.successors(v):
             if w != u and w != v and (w, u) in edge_set:
                 three.add(canonicalize_cycle([u, v, w]))
@@ -203,9 +208,11 @@ def get_cycle_analysis_cached(simple: nx.DiGraph, cache_path=CYCLES_CACHE_PATH) 
 def plot_suspicious_cluster(G: nx.MultiDiGraph, illicit_cycles: set, communities: list,
                              node_to_comm: dict, illicit_nodes: set):
     if illicit_cycles:
-        cluster = max(illicit_cycles, key=len)
+        # Deterministic pick (longest, then lexicographic): set iteration
+        # order of string tuples varies with PYTHONHASHSEED.
+        cluster = max(illicit_cycles, key=lambda c: (len(c), c))
         sub_nodes = list(cluster)
-        title = f"Suspicious cycle ({len(cluster)}-cycle, touches an illicit transaction)"
+        title = f"Detected {len(cluster)}-account cycle containing a laundering transaction"
     else:
         comm_illicit_counts = [
             (i, len(comm & illicit_nodes)) for i, comm in enumerate(communities)
@@ -229,23 +236,57 @@ def plot_suspicious_cluster(G: nx.MultiDiGraph, illicit_cycles: set, communities
         else:
             sub_simple.add_edge(u, v, is_laundering=is_laundering)
 
-    pos = nx.spring_layout(sub_simple, seed=42)
-    node_colors = ["red" if n in illicit_nodes else "steelblue" for n in sub_simple.nodes()]
-    edge_colors = [
-        "red" if d.get("is_laundering") == 1 else "gray"
-        for _, _, d in sub_simple.edges(data=True)
+    if illicit_cycles:
+        # Lay the cycle out in its own traversal order so the loop reads clockwise.
+        angles = np.linspace(np.pi / 2, np.pi / 2 - 2 * np.pi, len(sub_nodes), endpoint=False)
+        pos = {n: (np.cos(a), np.sin(a)) for n, a in zip(sub_nodes, angles)}
+    else:
+        pos = nx.spring_layout(sub_simple, seed=42)
+    node_colors = ["#c0392b" if n in illicit_nodes else "steelblue" for n in sub_simple.nodes()]
+    loop_edges = [(u, v) for u, v in sub_simple.edges() if u == v]
+    if illicit_cycles:
+        cycle_edges = {(sub_nodes[i], sub_nodes[(i + 1) % len(sub_nodes)]) for i in range(len(sub_nodes))}
+    else:
+        cycle_edges = {(u, v) for u, v in sub_simple.edges() if u != v}
+    flow_edges = [e for e in sub_simple.edges() if e in cycle_edges]
+    other_edges = [(u, v) for u, v in sub_simple.edges() if u != v and (u, v) not in cycle_edges]
+    flow_colors = [
+        "#c0392b" if sub_simple[u][v].get("is_laundering") == 1 else "dimgray" for u, v in flow_edges
     ]
 
-    plt.figure(figsize=(10, 8))
-    nx.draw_networkx_nodes(sub_simple, pos, node_color=node_colors, node_size=400, alpha=0.85)
-    nx.draw_networkx_edges(
-        sub_simple, pos, edge_color=edge_colors, arrows=True, arrowsize=15, width=1.5
-    )
-    nx.draw_networkx_labels(sub_simple, pos, font_size=7)
-    plt.title(title)
-    plt.axis("off")
+    fig, ax = plt.subplots(figsize=(9, 8))
+    nx.draw_networkx_nodes(sub_simple, pos, ax=ax, node_color=node_colors, node_size=700, alpha=0.9)
+    nx.draw_networkx_edges(sub_simple, pos, ax=ax, edgelist=other_edges, edge_color="silver",
+                           style="dotted", arrows=True, arrowsize=14, width=1.2, node_size=700)
+    nx.draw_networkx_edges(sub_simple, pos, ax=ax, edgelist=flow_edges, edge_color=flow_colors,
+                           arrows=True, arrowsize=24, width=3.0, node_size=700)
+    # Labels placed radially outside each node so they never overlap the
+    # node, its self-loop, or an incident edge.
+    for n, (x, y) in pos.items():
+        r = (x * x + y * y) ** 0.5 or 1.0
+        lx, ly = x + 0.22 * x / r, y + 0.22 * y / r
+        ha = "left" if lx > 0.05 else "right" if lx < -0.05 else "center"
+        ax.text(lx, ly, n, fontsize=12, ha=ha, va="center", family="monospace")
+    n_loops = len(loop_edges)
+    handles = [mpatches.Patch(color="#c0392b", label="Illicit-labelled account / laundering transaction")]
+    if any(n not in illicit_nodes for n in sub_simple.nodes()):
+        handles.append(mpatches.Patch(color="steelblue", label="Licit-labelled account"))
+    if "dimgray" in flow_colors:
+        handles.append(mpatches.Patch(color="dimgray", label="Non-laundering transaction in the cycle"))
+    if other_edges:
+        handles.append(Line2D([0], [0], color="silver", linestyle=":", linewidth=2,
+                              label="Other transfers among these accounts"))
+    ax.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, -0.08), ncol=1,
+              fontsize=11, frameon=False)
+    if n_loops:
+        ax.text(0, -1.38, f"Self-transfers on {n_loops} of {len(sub_nodes)} accounts omitted for clarity",
+                ha="center", fontsize=10, style="italic")
+    ax.set_xlim(-1.75, 1.75)
+    ax.set_ylim(-1.5, 1.35)
+    ax.set_title(title, fontsize=13)
+    ax.axis("off")
     plt.tight_layout()
-    plt.savefig(CLUSTER_PNG, dpi=150)
+    plt.savefig(CLUSTER_PNG, dpi=200, bbox_inches="tight")
     plt.close()
     return title
 
@@ -264,11 +305,6 @@ def main() -> None:
     print("Identifying illicit-labeled nodes/edges...")
     illicit_nodes, illicit_edge_pairs = get_illicit_nodes_and_edges(G)
     print(f"  {len(illicit_nodes):,} illicit-touching accounts, {len(illicit_edge_pairs):,} illicit (u,v) pairs")
-
-    # --- Degree centrality (cheap, exact) ---
-    print("Computing degree centrality...")
-    in_deg_cent = nx.in_degree_centrality(G)
-    out_deg_cent = nx.out_degree_centrality(G)
 
     # --- Betweenness centrality (approximate) ---
     print(f"Computing approximate betweenness centrality (k={BETWEENNESS_K})...")

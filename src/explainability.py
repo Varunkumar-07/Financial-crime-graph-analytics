@@ -31,6 +31,7 @@ Run from the project root with the venv activated:
     python src/explainability.py
 """
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -40,33 +41,36 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import networkx as nx
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
-from sklearn.model_selection import train_test_split
 from torch_geometric.explain import Explainer, GNNExplainer
 from torch_geometric.utils import k_hop_subgraph
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import graph_analysis as ga
-from train_gnn import GraphSAGE, RANDOM_STATE, f2_optimal_threshold, preprocess_features
+from splits import RANDOM_STATE, split_indices  # noqa: E402
+from train_gnn import GraphSAGE, f2_optimal_threshold, preprocess_features
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = PROJECT_ROOT / "notebooks" / "explainability"
 SUMMARY_MD = PROJECT_ROOT / "notebooks" / "explainability_summary.md"
+CASES_JSON = PROJECT_ROOT / "notebooks" / "explainability_cases.json"
 
-# (account, case_type) — selected in the step-1 checkpoint: test-set only,
-# a mix of TP/FN/FP with enough connectivity to make the plots meaningful.
-SAMPLES = [
-    ("8000E1590", "true_positive_hub"),
-    ("80408AC50", "true_positive_marginal"),
-    ("806CD7380", "false_negative"),
-    ("80C7FA5E0", "false_positive"),
-]
+CASE_LABELS = {
+    "true_positive_confident": "Confident True Positive",
+    "true_positive_marginal": "Marginal True Positive",
+    "false_negative": "False Negative",
+    "false_positive": "False Positive",
+}
 
 VIZ_MAX_NODES = 40  # use 2-hop viz radius if it stays under this, else 1-hop
+# Case-selection eligibility: test-set accounts in at least one detected
+# cycle whose 1-hop neighbourhood is small enough to draw legibly.
+MIN_NEIGHBOURS, MAX_NEIGHBOURS = 5, 39
 EXPLAIN_HOPS = 3    # matches the model's 3 SAGEConv layers
 
 
@@ -74,10 +78,8 @@ def setup_model_and_data():
     data = torch.load(PROJECT_ROOT / "data" / "processed" / "pyg_data.pt", weights_only=False)
     ckpt = torch.load(PROJECT_ROOT / "data" / "processed" / "graphsage_baseline.pt", weights_only=False)
 
-    idx = np.arange(data.num_nodes)
     y_np = data.y.numpy()
-    train_idx, test_idx = train_test_split(idx, test_size=0.2, stratify=y_np, random_state=RANDOM_STATE)
-    train_idx, val_idx = train_test_split(train_idx, test_size=0.125, stratify=y_np[train_idx], random_state=RANDOM_STATE)
+    train_idx, val_idx, test_idx = split_indices(y_np)
 
     x_np = preprocess_features(data.x.numpy().copy(), data.feature_cols, train_idx)
     x = torch.tensor(x_np, dtype=torch.float)
@@ -97,6 +99,36 @@ def setup_model_and_data():
         "test_idx": set(test_idx.tolist()), "threshold": thresh,
         "proba_all": proba_all,
     }
+
+
+def select_samples(ctx, cycle_count):
+    """Pick the four case-study accounts by a fixed rule rather than by hand,
+    so the selection is reproducible after any retraining. Among eligible
+    test-set accounts (see MIN/MAX_NEIGHBOURS, cycle_count >= 1):
+      - true_positive_confident: illicit, flagged, highest probability
+      - true_positive_marginal: illicit, flagged, lowest probability
+      - false_negative:         illicit, not flagged, highest probability
+      - false_positive:         licit, flagged, highest probability
+    """
+    data, y_np, proba, thr = ctx["data"], ctx["y_np"], ctx["proba_all"], ctx["threshold"]
+    n_neigh = np.bincount(data.edge_index[0].numpy(), minlength=data.num_nodes)
+    test = np.array(sorted(ctx["test_idx"]))
+    cyc = np.array([cycle_count.get(data.accounts[i], 0) for i in test])
+    ok = test[(cyc >= 1) & (n_neigh[test] >= MIN_NEIGHBOURS) & (n_neigh[test] <= MAX_NEIGHBOURS)]
+    flagged = proba[ok] >= thr
+    illicit = y_np[ok] == 1
+
+    def pick(mask, highest):
+        cand = ok[mask]
+        order = np.argsort(proba[cand])
+        return data.accounts[cand[order[-1] if highest else order[0]]]
+
+    return [
+        (pick(illicit & flagged, True), "true_positive_confident"),
+        (pick(illicit & flagged, False), "true_positive_marginal"),
+        (pick(illicit & ~flagged, True), "false_negative"),
+        (pick(~illicit & flagged, True), "false_positive"),
+    ]
 
 
 def get_cycles_cached():
@@ -143,6 +175,7 @@ def run_gnn_explainer(account, model, x, data):
         idx, num_hops=EXPLAIN_HOPS, edge_index=data.edge_index, relabel_nodes=True
     )
     sub_x = x[subset]
+    torch.manual_seed(RANDOM_STATE)  # GNNExplainer mask init is random
     explainer = Explainer(
         model=model,
         algorithm=GNNExplainer(epochs=100),
@@ -167,19 +200,16 @@ def run_gnn_explainer(account, model, x, data):
 
 
 def plot_case(account, case_type, G_sub, radius_used, illicit_nodes, illicit_edge_pairs,
-              account_cycles, community_lookup, edge_importance, feature_row, proba, y_true, threshold):
-    fig = plt.figure(figsize=(14, 8))
-    gs = fig.add_gridspec(1, 3, width_ratios=[2, 2, 1.1])
+              account_cycles, community_lookup, edge_importance, feature_row, proba, y_true, threshold,
+              top_features=()):
+    fig = plt.figure(figsize=(15, 8))
+    gs = fig.add_gridspec(1, 3, width_ratios=[2, 2, 1.5])
     ax_graph = fig.add_subplot(gs[0, :2])
     ax_text = fig.add_subplot(gs[0, 2])
     ax_text.axis("off")
 
     pos = nx.spring_layout(G_sub, seed=42, k=1.2 / max(len(G_sub), 1) ** 0.5)
     center_community = community_lookup.get(account)
-
-    cycle_node_set = set()
-    for c in account_cycles:
-        cycle_node_set.update(c)
 
     node_colors, node_sizes, node_edgecolors, node_linewidths = [], [], [], []
     for n in G_sub.nodes():
@@ -206,8 +236,9 @@ def plot_case(account, case_type, G_sub, radius_used, illicit_nodes, illicit_edg
     draw_edges = list(simple_edges.keys())
     for (u, v) in draw_edges:
         is_ill = simple_edges[(u, v)]
-        in_cycle_edge = (u in cycle_node_set and v in cycle_node_set and
-                          any(u in c and v in c for c in account_cycles))
+        in_cycle_edge = u != v and any(
+            (c[i], c[(i + 1) % len(c)]) == (u, v) for c in account_cycles for i in range(len(c))
+        )
         imp = edge_importance.get((u, v), 0.0)
         if is_ill:
             edge_colors.append("crimson")
@@ -223,48 +254,49 @@ def plot_case(account, case_type, G_sub, radius_used, illicit_nodes, illicit_edg
     for (u, v), color, width, style in zip(draw_edges, edge_colors, edge_widths, edge_styles):
         nx.draw_networkx_edges(G_sub, pos, ax=ax_graph, edgelist=[(u, v)], edge_color=color,
                                 width=width, style=style, arrows=True, arrowsize=12, alpha=0.8)
-    nx.draw_networkx_labels(G_sub, pos, ax=ax_graph, font_size=6)
+    # Labels sit just below each node so they never cover the node or its self-loop.
+    label_pos = {n: (x, y - 0.09) for n, (x, y) in pos.items()}
+    nx.draw_networkx_labels(G_sub, label_pos, ax=ax_graph, font_size=9, font_family="monospace",
+                            bbox=dict(facecolor="white", edgecolor="none", alpha=0.8, pad=0.5))
 
     legend_handles = [
-        mpatches.Patch(color="crimson", label="Illicit-labeled account/edge"),
-        mpatches.Patch(color="steelblue", label="Licit-labeled account"),
-        mpatches.Patch(color="darkorange", label="High GNNExplainer importance (non-illicit edge)"),
-        mpatches.Patch(facecolor="white", edgecolor="gold", linewidth=2, label="Same community as target"),
+        mpatches.Patch(color="crimson", label="Illicit-labelled account / laundering transaction"),
+        mpatches.Patch(color="steelblue", label="Licit-labelled account"),
+        mpatches.Patch(color="darkorange", label="High GNNExplainer importance (non-laundering edge)"),
+        mpatches.Patch(facecolor="white", edgecolor="gold", linewidth=2, label="Same community as target (gold outline)"),
+        Line2D([0], [0], color="gray", linestyle="--", linewidth=2, label="Edge in a detected cycle with the target"),
     ]
-    ax_graph.legend(handles=legend_handles, loc="upper left", fontsize=7, framealpha=0.9)
-    case_label = case_type.replace("_", " ").title()
-    ax_graph.set_title(f"{account} — {case_label}\n({radius_used}-hop ego-subgraph, {len(G_sub)} nodes)",
-                        fontsize=11)
+    ax_graph.legend(handles=legend_handles, loc="upper left", fontsize=9, framealpha=0.9)
+    case_label = CASE_LABELS[case_type]
+    ax_graph.set_title(f"{account} — {case_label}\n(drawn: {radius_used}-hop neighbourhood, "
+                        f"{len(G_sub)} nodes; attribution: {EXPLAIN_HOPS}-hop subgraph)", fontsize=12)
     ax_graph.axis("off")
 
-    cycle_lens = sorted(len(c) for c in account_cycles)
+    by_len = {}
+    for c in account_cycles:
+        by_len[len(c)] = by_len.get(len(c), 0) + 1
     text_lines = [
-        f"ACCOUNT: {account}",
-        f"Case: {case_label}",
+        f"Account: {account}",
+        f"True label: {'illicit' if y_true == 1 else 'licit'}",
+        f"Probability: {proba:.4f}",
+        f"Threshold: {threshold:.4f}",
+        f"Predicted: {'illicit' if proba >= threshold else 'licit'}",
         "",
-        f"True label: {'ILLICIT' if y_true == 1 else 'licit'}",
-        f"Predicted probability: {proba:.4f}",
-        f"Decision threshold: {threshold:.4f}",
-        f"Predicted: {'ILLICIT' if proba >= threshold else 'licit'}",
+        "Key features",
+        f"  in / out degree: {feature_row['in_degree']:.0f} / {feature_row['out_degree']:.0f}",
+        f"  betweenness: {feature_row['betweenness']:.2e}",
+        f"  community size: {feature_row['community_size']:.0f}",
+        f"  community illicit density: {feature_row['community_illicit_density']:.4f}",
         "",
-        "--- Key features ---",
-        f"in_degree: {feature_row['in_degree']:.0f}",
-        f"out_degree: {feature_row['out_degree']:.0f}",
-        f"total_degree: {feature_row['total_degree']:.0f}",
-        f"betweenness: {feature_row['betweenness']:.6f}",
-        f"community_illicit_density: {feature_row['community_illicit_density']:.4f}",
-        f"community_size: {feature_row['community_size']:.0f}",
-        f"cycle_count (feature): {feature_row['cycle_count']:.0f}",
-        f"cycle_flag: {feature_row['cycle_flag']:.0f}",
-        "",
-        "--- Cycle membership (Phase 5) ---",
+        f"Detected cycles: {len(account_cycles)}",
     ]
-    if cycle_lens:
-        text_lines.append(f"In {len(cycle_lens)} detected cycle(s), lengths: {cycle_lens}")
-    else:
-        text_lines.append("Not in any detected cycle")
+    for length in sorted(by_len):
+        text_lines.append(f"  length {length}: {by_len[length]}")
+    if top_features:
+        text_lines += ["", "Top GNNExplainer features"]
+        text_lines += [f"  {name}" for name in top_features]
 
-    ax_text.text(0, 1, "\n".join(text_lines), fontsize=8, family="monospace",
+    ax_text.text(0, 1, "\n".join(text_lines), fontsize=11, family="monospace",
                  va="top", ha="left", transform=ax_text.transAxes)
 
     plt.tight_layout()
@@ -281,10 +313,16 @@ def main():
     y_np, test_idx, threshold, proba_all = ctx["y_np"], ctx["test_idx"], ctx["threshold"], ctx["proba_all"]
 
     account_to_idx = {a: i for i, a in enumerate(data.accounts)}
-    for account, _ in SAMPLES:
-        assert account_to_idx[account] in test_idx, f"{account} is not in the test set!"
-
     all_cycles, G_multi = get_cycles_cached()
+    cycle_count = {}
+    for cyc in all_cycles:
+        for node in cyc:
+            cycle_count[node] = cycle_count.get(node, 0) + 1
+
+    samples = select_samples(ctx, cycle_count)
+    for account, case_type in samples:
+        assert account_to_idx[account] in test_idx, f"{account} is not in the test set!"
+        print(f"Selected {case_type}: {account}")
 
     features_df = pd.read_csv(PROJECT_ROOT / "data" / "processed" / "account_features.csv").set_index("account")
     community_lookup = features_df["community_id"].to_dict()
@@ -292,7 +330,7 @@ def main():
     illicit_edge_pairs = set()  # populated per-subgraph from real edge attrs below
 
     report_sections = []
-    for account, case_type in SAMPLES:
+    for account, case_type in samples:
         print(f"\nProcessing {account} ({case_type})...")
         idx = account_to_idx[account]
         proba = proba_all[idx]
@@ -308,20 +346,26 @@ def main():
         print(f"  GNNExplainer done in {time.time()-t0:.2f}s")
 
         feature_row = features_df.loc[account]
+        top_features = data.feature_cols
+        top_feat_idx = np.argsort(-feat_importance)[:5]
         out_path = plot_case(
             account, case_type, G_sub, radius_used, illicit_nodes, illicit_edge_pairs,
             account_cycles, community_lookup, edge_importance, feature_row, proba, y_true, threshold,
+            top_features=[top_features[i] for i in top_feat_idx[:3]],
         )
         print(f"  Saved {out_path}")
 
-        top_features = data.feature_cols
-        top_feat_idx = np.argsort(-feat_importance)[:5]
         top_feat_str = ", ".join(f"{top_features[i]} ({feat_importance[i]:.3f})" for i in top_feat_idx)
 
         top_edges = sorted(edge_importance.items(), key=lambda kv: -kv[1])[:5]
         top_edges_str = "; ".join(f"{u}->{v} ({imp:.3f})" for (u, v), imp in top_edges)
 
+        neighbours = set(G_multi.predecessors(account)) | set(G_multi.successors(account))
+        neighbours.discard(account)
         report_sections.append({
+            "n_neighbours": len(neighbours),
+            "n_illicit_neighbours": len(neighbours & illicit_nodes),
+            "top_features": [top_features[i] for i in top_feat_idx],
             "account": account, "case_type": case_type, "proba": proba, "y_true": y_true,
             "threshold": threshold, "feature_row": feature_row, "account_cycles": account_cycles,
             "top_feat_str": top_feat_str, "top_edges_str": top_edges_str,
@@ -329,16 +373,34 @@ def main():
         })
 
     write_summary(report_sections)
+    cases = []
+    for sec in report_sections:
+        fr = sec["feature_row"]
+        cases.append({
+            "account": sec["account"], "case_type": sec["case_type"],
+            "label": CASE_LABELS[sec["case_type"]].lower(),
+            "proba": float(sec["proba"]), "y_true": int(sec["y_true"]),
+            "threshold": float(sec["threshold"]), "png": sec["png"],
+            "radius": sec["radius"], "n_nodes_drawn": sec["n_nodes"],
+            "cycle_lengths": sorted(len(c) for c in sec["account_cycles"]),
+            "n_neighbours": sec["n_neighbours"], "n_illicit_neighbours": sec["n_illicit_neighbours"],
+            "top_features": sec["top_features"],
+            "features": {k: float(fr[k]) for k in (
+                "in_degree", "out_degree", "total_degree", "betweenness", "community_size",
+                "community_illicit_density", "cycle_count", "total_sent", "total_received",
+                "transaction_count")},
+        })
+    CASES_JSON.write_text(json.dumps(cases, indent=2))
 
 
 def write_summary(sections):
     lines = [
         "# Explainability Summary",
         "",
-        "Four accounts from the **test set only** (never seen in training), selected to cover "
-        "true positive, false negative, and false positive cases — not cherry-picked as the "
-        "single best-looking example, but chosen for having enough graph structure to make the "
-        "explanation meaningful. See notebooks/explainability/ for the corresponding PNGs.",
+        "Four accounts from the **test set only**, chosen by a fixed rule (select_samples): among "
+        "test accounts in at least one detected cycle with 5-39 neighbours, the highest-probability "
+        "true positive, the lowest-probability true positive, the highest-probability false "
+        "negative, and the highest-probability false positive. See notebooks/explainability/.",
         "",
         "## Methodology",
         "- Ego-subgraph for visualization: 2-hop if that stays under 40 nodes, else 1-hop "
@@ -382,12 +444,10 @@ def write_summary(sections):
         "## Case-by-case narrative",
         "",
     ]
-    if "true_positive_hub" in by_type:
-        s = by_type["true_positive_hub"]
+    if "true_positive_confident" in by_type:
+        s = by_type["true_positive_confident"]
         narrative += [
-            f"**{s['account']} (confident true positive):** this account also appeared in Phase 5's "
-            "suspicious 6-cycle visualization — flagged as structurally notable before any label "
-            "was used. The model agrees with high confidence "
+            f"**{s['account']} (confident true positive):** the model flags this account with high confidence "
             f"({s['proba']:.3f}), and GNNExplainer's top features/edges show why: high degree, "
             "heavy cycle participation, and neighbors that are themselves illicit or highly "
             "central. This is the model working as intended — structural signal and labels align.",
