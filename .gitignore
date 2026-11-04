@@ -9,3 +9,8 @@ data/processed/xgboost_baseline.json
 data/processed/random_forest_baseline.pkl
 data/processed.backup_*/
 .DS_Store
+
+# Reports and papers (kept local)
+*.pdf
+*.docx
+paper/
