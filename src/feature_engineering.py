@@ -111,16 +111,8 @@ def main() -> None:
     print(f"  {simple.number_of_nodes():,} nodes, {simple.number_of_edges():,} simple edges, "
           f"{len(illicit_nodes):,} illicit-touching accounts")
 
-    print(f"Computing betweenness centrality (k={ga.BETWEENNESS_K}, approximate)...")
-    t0 = time.time()
-    betweenness = nx.betweenness_centrality(simple, k=ga.BETWEENNESS_K, seed=42, normalized=True)
-    print(f"  Done in {time.time() - t0:.1f}s")
-
-    print("Computing Louvain communities...")
-    t0 = time.time()
-    undirected = ga.build_undirected_weighted(simple)
-    communities = nx.community.louvain_communities(undirected, weight="weight", seed=42)
-    print(f"  Done in {time.time() - t0:.1f}s, {len(communities)} communities")
+    # Same settings as graph_analysis.py; reuses its cache when present.
+    betweenness, communities = ga.get_graph_metrics_cached(simple)
 
     node_to_comm = {}
     comm_size = {}
@@ -211,15 +203,14 @@ def main() -> None:
         "## Methodology notes",
         f"- Betweenness centrality: APPROXIMATE, k={ga.BETWEENNESS_K} random-source sampling "
         "(recomputed with the same parameters as graph_analysis.py).",
-        "- Louvain communities: recomputed with seed=42 on the undirected, "
-        "transaction-count-weighted graph.",
+        "- Louvain communities: seed=42 on the undirected graph (weight 2 if money moved "
+        "both ways between two accounts, else 1).",
         "- community_illicit_density: computed from TRAINING-split labels only (5-fold "
         "out-of-fold for training accounts, so no account's own label enters its own value); "
         "communities with no labelled training members use the global training illicit rate. "
         "No validation/test label enters any feature.",
-        f"- Cycle participation (length 2-6): {n_total_cycles:,} total cycles (shared cache) — exact "
-        "for 2/3-cycles and small-SCC 4-6 cycles, PARTIAL SAMPLE (120s cap) for the giant "
-        "17,075-node SCC. cycle_count is therefore a lower bound for accounts in that component.",
+        f"- Cycle participation (length 2-6): {n_total_cycles:,} total cycles (shared cache, "
+        "see graph_analysis_summary.md for how exact each part is).",
         f"- Observed dataset window: {total_days:.3f} days (computed directly from min/max "
         "Timestamp). A `velocity` feature (transaction_count / window) was considered but "
         "dropped: since the window is constant across all accounts, it's a pure linear "

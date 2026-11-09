@@ -8,30 +8,30 @@
 - Split: shared 70/10/20 train/validation/test split (splits.py, stratified), identical to the classical baselines; validation drives early stopping and threshold selection — test set is never used for anything but final reported metrics
 - Class imbalance handling: weighted cross-entropy loss, illicit class weight=80.02 (train neg/pos ratio) — the GNN analogue of scale_pos_weight/class_weight='balanced' in the classical baselines
 - Optimizer: Adam, lr=0.01, weight_decay=0.0005
-- Trained 200 epochs (early stopping, patience=20) in 276.8s (1.384s/epoch) on CPU
-- Best validation AUC-PR: 0.2682
+- Trained 163 epochs (early stopping, patience=20) in 328.6s (2.016s/epoch) on CPU
+- Best validation AUC-PR: 0.2517
 
 ## Test set evaluation
-- AUC-ROC: 0.9179
-- AUC-PR (average precision): 0.2470
+- AUC-ROC: 0.9143
+- AUC-PR (average precision): 0.2325
 
-**At default threshold 0.5:** precision=0.0531, recall=0.8631, f1=0.1000
+**At default threshold 0.5:** precision=0.0523, recall=0.8592, f1=0.0986
 
-**At chosen threshold 0.8164 (F2-optimal on validation set, not test — avoids the threshold-leakage caveat noted in the classical baseline report):** precision=0.1639, recall=0.4784, f1=0.2442
+**At chosen threshold 0.7924 (F2-optimal on validation set, not test — avoids the threshold-leakage caveat noted in the classical baseline report):** precision=0.1403, recall=0.5075, f1=0.2198
 
 Confusion matrix at chosen threshold:
 
 | | Predicted licit | Predicted illicit |
 |---|---|---|
-| Actual licit | 98,644 (TN) | 3,101 (FP) |
-| Actual illicit | 663 (FN) | 608 (TP) |
+| Actual licit | 97,792 (TN) | 3,953 (FP) |
+| Actual illicit | 626 (FN) | 645 (TP) |
 
 ## Comparison to classical baselines (same test set)
 
 | Model | AUC-ROC | AUC-PR |
 |---|---|---|
-| XGBoost | 0.8534 | 0.1229 |
-| Random Forest | 0.8470 | 0.0864 |
-| GraphSAGE | 0.9179 | 0.2470 |
+| XGBoost | 0.8545 | 0.1276 |
+| Random Forest | 0.8470 | 0.0858 |
+| GraphSAGE | 0.9143 | 0.2325 |
 
-Total runtime: 277.6s
+Total runtime: 330.0s

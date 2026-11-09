@@ -3,8 +3,7 @@ Graph analysis: centrality, Louvain communities and cycles (length 2-6).
 
 - Betweenness is approximate (k=500 samples, ~3-4 min).
 - 2/3-cycles are exact across the whole graph.
-- 4-6 cycles are exact in small SCCs; in the giant SCC (17K nodes) the
-  search is capped at 120s, so that count is a lower bound.
+- 4-6 cycles are exact everywhere (rank-ordered depth-limited search).
 
 Usage: python src/graph_analysis.py
 """
@@ -28,7 +27,6 @@ SUMMARY_MD = PROJECT_ROOT / "notebooks" / "graph_analysis_summary.md"
 CLUSTER_PNG = PROJECT_ROOT / "notebooks" / "suspicious_cluster.png"
 
 BETWEENNESS_K = 500
-GIANT_SCC_TIME_BUDGET_SEC = 120
 
 
 def load_graph() -> nx.MultiDiGraph:
@@ -100,28 +98,71 @@ def find_2_and_3_cycles(simple: nx.DiGraph):
 def find_small_scc_cycles(simple: nx.DiGraph, small_sccs: list):
     found = set()
     for scc in small_sccs:
-        sub = simple.subgraph(scc)
-        for cyc in nx.simple_cycles(sub, length_bound=6):
-            if len(cyc) >= 4:
-                found.add(canonicalize_cycle(cyc))
+        found |= find_long_cycles(simple, scc)
     return found
 
 
-def find_giant_scc_cycles_sampled(simple: nx.DiGraph, giant_scc: set, time_budget: float):
-    sub = simple.subgraph(giant_scc).copy()
+def find_long_cycles(simple: nx.DiGraph, nodes: set) -> set:
+    """Exact 4-6 length cycles within `nodes`.
+    Each cycle is found once, from its smallest node, by a depth-limited
+    DFS that only visits larger nodes. Deterministic and fast (~0.1s on
+    the 17K-node giant SCC, where nx.simple_cycles never finished).
+    """
+    sub = simple.subgraph(nodes)
+    order = sorted(sub.nodes())
+    rank = {n: i for i, n in enumerate(order)}
+    succ = {n: sorted(sub.successors(n), key=rank.__getitem__) for n in order}
     found = set()
-    deadline = time.time() + time_budget
-    hit_cap = False
-    for cyc in nx.simple_cycles(sub, length_bound=6):
-        if len(cyc) >= 4:
-            found.add(canonicalize_cycle(cyc))
-        if time.time() > deadline:
-            hit_cap = True
-            break
-    return found, hit_cap
+    for start in order:
+        r0 = rank[start]
+        path, on_path, stack = [start], {start}, [iter(succ[start])]
+        while stack:
+            for w in stack[-1]:
+                if w == start:
+                    if len(path) >= 4:
+                        found.add(tuple(path))  # already starts at its smallest node
+                elif rank[w] > r0 and w not in on_path and len(path) < 6:
+                    path.append(w)
+                    on_path.add(w)
+                    stack.append(iter(succ[w]))
+                    break
+            else:
+                stack.pop()
+                on_path.discard(path.pop())
+    return found
 
 
 CYCLES_CACHE_PATH = PROJECT_ROOT / "data" / "processed" / "all_cycles_cache.pkl"
+METRICS_CACHE_PATH = PROJECT_ROOT / "data" / "processed" / "graph_metrics_cache.pkl"
+
+
+def get_graph_metrics_cached(simple: nx.DiGraph, cache_path=METRICS_CACHE_PATH):
+    """Approximate betweenness and Louvain communities, cached on disk.
+    Both are seeded, so the cache matches a fresh computation.
+    Returns (betweenness dict, list of community sets).
+    """
+    if cache_path.exists():
+        with open(cache_path, "rb") as f:
+            cached = pickle.load(f)
+        print(f"Loaded cached betweenness/communities from {cache_path}")
+        return cached["betweenness"], cached["communities"]
+
+    print(f"Computing approximate betweenness centrality (k={BETWEENNESS_K})...")
+    t0 = time.time()
+    betweenness = nx.betweenness_centrality(simple, k=BETWEENNESS_K, seed=42, normalized=True)
+    print(f"  Done in {time.time() - t0:.1f}s")
+
+    print("Running Louvain community detection...")
+    t0 = time.time()
+    undirected = build_undirected_weighted(simple)
+    communities = nx.community.louvain_communities(undirected, weight="weight", seed=42)
+    print(f"  Done in {time.time() - t0:.1f}s, {len(communities)} communities")
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "wb") as f:
+        pickle.dump({"betweenness": betweenness, "communities": communities}, f,
+                    protocol=pickle.HIGHEST_PROTOCOL)
+    return betweenness, communities
 
 
 def compute_cycle_analysis(simple: nx.DiGraph) -> dict:
@@ -135,7 +176,8 @@ def compute_cycle_analysis(simple: nx.DiGraph) -> dict:
     small_sccs = [s for s in nontrivial_sccs if s is not giant_scc]
 
     small_scc_cycles = find_small_scc_cycles(simple, small_sccs)
-    giant_scc_cycles, hit_cap = find_giant_scc_cycles_sampled(simple, giant_scc, GIANT_SCC_TIME_BUDGET_SEC)
+    giant_scc_cycles = find_long_cycles(simple, giant_scc)
+    hit_cap = False  # kept for older caches, which used a time-capped search
 
     all_exact_cycles = two_cycles | three_cycles | small_scc_cycles
     all_cycles = all_exact_cycles | giant_scc_cycles
@@ -156,7 +198,7 @@ def compute_cycle_analysis(simple: nx.DiGraph) -> dict:
 
 
 def get_cycle_analysis_cached(simple: nx.DiGraph, cache_path=CYCLES_CACHE_PATH) -> dict:
-    """Cached compute_cycle_analysis() (detection takes ~150-300s).
+    """Cached compute_cycle_analysis() (detection takes ~10s).
     Old-format caches are ignored and rebuilt.
     """
     if cache_path.exists():
@@ -275,22 +317,11 @@ def main() -> None:
     illicit_nodes, illicit_edge_pairs = get_illicit_nodes_and_edges(G)
     print(f"  {len(illicit_nodes):,} illicit-touching accounts, {len(illicit_edge_pairs):,} illicit (u,v) pairs")
 
-    # Betweenness centrality (approximate)
-    print(f"Computing approximate betweenness centrality (k={BETWEENNESS_K})...")
-    t0 = time.time()
-    betweenness = nx.betweenness_centrality(simple, k=BETWEENNESS_K, seed=42, normalized=True)
-    print(f"  Done in {time.time() - t0:.1f}s")
+    # Betweenness (approximate) and Louvain communities (cached)
+    betweenness, communities = get_graph_metrics_cached(simple)
 
     top20_betweenness = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:20]
     top20_illicit_count = sum(1 for acct, _ in top20_betweenness if acct in illicit_nodes)
-
-    # Louvain communities
-    print("Building undirected weighted graph for Louvain...")
-    undirected = build_undirected_weighted(simple)
-    print("Running Louvain community detection...")
-    t0 = time.time()
-    communities = nx.community.louvain_communities(undirected, weight="weight", seed=42)
-    print(f"  Done in {time.time() - t0:.1f}s, {len(communities)} communities")
 
     node_to_comm = {}
     for i, comm in enumerate(communities):
@@ -319,7 +350,6 @@ def main() -> None:
     small_scc_cycles = cycle_result["small_scc_cycles"]
     giant_scc_cycles = cycle_result["giant_scc_cycles"]
     hit_cap = cycle_result["hit_cap"]
-    all_exact_cycles = cycle_result["all_exact_cycles"]
     all_cycles = cycle_result["all_cycles"]
     nontrivial_sccs_count = cycle_result["nontrivial_scc_count"]
     giant_scc_size = cycle_result["giant_scc_size"]
@@ -331,7 +361,7 @@ def main() -> None:
           f"{small_sccs_count} small SCCs (max size {small_sccs_max_size})")
     print(f"  4-6 length cycles in small SCCs: {len(small_scc_cycles)}")
     print(f"  4-6 length cycles in giant SCC: {len(giant_scc_cycles)} "
-          f"({'CAPPED — partial sample' if hit_cap else 'exhausted before cap'})")
+          f"({'partial, old time-capped cache' if hit_cap else 'exact'})")
 
     illicit_cycles = {c for c in all_cycles if cycle_touches_illicit(c, illicit_edge_pairs)}
     pct_illicit_cycles = 100 * len(illicit_cycles) / len(all_cycles) if all_cycles else 0.0
@@ -343,9 +373,9 @@ def main() -> None:
 
     # Write summary
     giant_scc_note = (
-        "cap was hit — this is a lower bound, not exhaustive"
+        "PARTIAL — loaded from an old time-capped cache, so this is a lower bound"
         if hit_cap
-        else "search completed before the cap"
+        else "exact (exhaustive depth-limited search)"
     )
     lines = [
         "# Graph Analysis Summary",
@@ -357,9 +387,7 @@ def main() -> None:
         f"4-6 length cycles within the {small_sccs_count} small strongly-connected components "
         f"(max size {small_sccs_max_size}).",
         f"- Cycle detection within the giant {giant_scc_size:,}-node strongly connected "
-        f"component is a PARTIAL SAMPLE: a full run hung for 5.5+ minutes with no result "
-        f"and was killed during development, so it was capped at "
-        f"{GIANT_SCC_TIME_BUDGET_SEC}s wall-clock ({giant_scc_note}).",
+        f"component: {giant_scc_note}.",
         "",
         "## Betweenness centrality — top 20 accounts",
         f"- Of the top 20 accounts by (approximate) betweenness centrality, "
@@ -374,7 +402,7 @@ def main() -> None:
 
     lines += [
         "",
-        "## Community detection (Louvain, undirected, weighted by transaction count)",
+        "## Community detection (Louvain, undirected; weight 2 if money moved both ways, else 1)",
         f"- Number of communities found: {len(communities):,}",
         f"- Community size distribution — largest: {comm_sizes[0]:,}, "
         f"median: {comm_sizes[len(comm_sizes)//2]:,}, smallest: {comm_sizes[-1]:,}",
@@ -390,10 +418,10 @@ def main() -> None:
         f"- 2-cycles (exact, whole graph): {len(two_cycles):,}",
         f"- 3-cycles (exact, whole graph): {len(three_cycles):,}",
         f"- 4-6 length cycles in small SCCs (exact): {len(small_scc_cycles):,}",
-        f"- 4-6 length cycles in giant SCC ({GIANT_SCC_TIME_BUDGET_SEC}s sample, "
-        f"{'PARTIAL — lower bound' if hit_cap else 'exhaustive'}): {len(giant_scc_cycles):,}",
-        f"- **Total cycles found: {len(all_cycles):,}** "
-        f"({len(all_exact_cycles):,} exact + {len(giant_scc_cycles):,} sampled)",
+        f"- 4-6 length cycles in giant SCC "
+        f"({'PARTIAL — lower bound, from an old time-capped cache' if hit_cap else 'exact'}): "
+        f"{len(giant_scc_cycles):,}",
+        f"- **Total cycles found: {len(all_cycles):,}**",
         f"- Cycles involving at least one illicit-labeled edge: {len(illicit_cycles):,} "
         f"({pct_illicit_cycles:.2f}% of all cycles found)",
         "",

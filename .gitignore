@@ -14,3 +14,5 @@ data/processed.backup_*/
 *.pdf
 *.docx
 paper/
+
+data/processed/graph_metrics_cache.pkl

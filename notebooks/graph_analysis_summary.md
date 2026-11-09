@@ -3,7 +3,7 @@
 ## Scope and methodology notes
 - Betweenness centrality: APPROXIMATE, k=500 random-source sampling (exact is infeasible at 515K nodes).
 - Cycle detection (length 2-6): EXACT for 2- and 3-cycles (whole graph) and for 4-6 length cycles within the 2927 small strongly-connected components (max size 12).
-- Cycle detection within the giant 17,075-node strongly connected component is a PARTIAL SAMPLE: a full run hung for 5.5+ minutes with no result and was killed during development, so it was capped at 120s wall-clock (cap was hit — this is a lower bound, not exhaustive).
+- Cycle detection within the giant 17,075-node strongly connected component: exact (exhaustive depth-limited search).
 
 ## Betweenness centrality — top 20 accounts
 - Of the top 20 accounts by (approximate) betweenness centrality, 4 are labeled illicit (touch at least one illicit transaction).
@@ -31,7 +31,7 @@
 | 19 | 807F7B490 | 0.001582 |  |
 | 20 | 800081CA0 | 0.001578 |  |
 
-## Community detection (Louvain, undirected, weighted by transaction count)
+## Community detection (Louvain, undirected; weight 2 if money moved both ways, else 1)
 - Number of communities found: 115,975
 - Community size distribution — largest: 57,698, median: 1, smallest: 1
 - Top 10 community sizes: [57698, 57620, 15618, 14409, 13214, 13108, 12171, 11345, 11125, 10033]
@@ -42,11 +42,11 @@
 - 2-cycles (exact, whole graph): 3,693
 - 3-cycles (exact, whole graph): 563
 - 4-6 length cycles in small SCCs (exact): 119
-- 4-6 length cycles in giant SCC (120s sample, PARTIAL — lower bound): 29
-- **Total cycles found: 4,404** (4,375 exact + 29 sampled)
-- Cycles involving at least one illicit-labeled edge: 336 (7.63% of all cycles found)
+- 4-6 length cycles in giant SCC (exact): 780
+- **Total cycles found: 5,155**
+- Cycles involving at least one illicit-labeled edge: 1,080 (20.95% of all cycles found)
 
 ## Visualization
 - Saved to `notebooks/suspicious_cluster.png`: Detected 6-account cycle containing a laundering transaction
 
-Total analysis runtime: 333.0s
+Total analysis runtime: 489.2s

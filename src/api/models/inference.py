@@ -6,6 +6,7 @@ from explainability import (
     find_account_cycles,
     get_viz_subgraph,
     run_gnn_explainer,
+    top_edge_pairs,
 )
 
-__all__ = ["find_account_cycles", "get_viz_subgraph", "run_gnn_explainer"]
+__all__ = ["find_account_cycles", "get_viz_subgraph", "run_gnn_explainer", "top_edge_pairs"]

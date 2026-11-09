@@ -6,7 +6,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, HTTPException, Query
 from torch_geometric.utils import k_hop_subgraph
 
-from api.models.inference import find_account_cycles, get_viz_subgraph, run_gnn_explainer
+from api.models.inference import find_account_cycles, get_viz_subgraph, run_gnn_explainer, top_edge_pairs
 from api.models.state import state
 from api.schemas.account import (
     FlaggedAccount,
@@ -183,10 +183,9 @@ def _explain(account_id: str) -> ExplanationResponse:
         for i in top_feat_idx
     ]
 
-    top_edges_sorted = sorted(edge_importance.items(), key=lambda kv: -kv[1])[:5]
     top_edges = [
         EdgeAttribution(source=u, target=v, importance=float(imp))
-        for (u, v), imp in top_edges_sorted
+        for (u, v), imp in top_edge_pairs(edge_importance)
     ]
 
     account_cycles = find_account_cycles(account_id, state.all_cycles)

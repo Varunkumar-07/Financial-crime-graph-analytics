@@ -177,9 +177,27 @@ def run_gnn_explainer(account, model, x, data, account_to_idx=None):
         u, v = local_accounts[src[e].item()], local_accounts[dst[e].item()]
         imp = explanation.edge_mask[e].item()
         edge_importance[(u, v)] = max(imp, edge_importance.get((u, v), 0.0))
+    # Messages flow both ways, but a transaction has one direction: score a
+    # pair by its stronger direction so lookups work either way round.
+    edge_importance = {
+        (u, v): max(imp, edge_importance.get((v, u), 0.0)) for (u, v), imp in edge_importance.items()
+    }
 
     feat_importance = explanation.node_mask[mapping.item()].numpy()
     return edge_importance, feat_importance
+
+
+def top_edge_pairs(edge_importance, k=5):
+    """Top-k account pairs by importance, each pair listed once."""
+    seen, top = set(), []
+    for (u, v), imp in sorted(edge_importance.items(), key=lambda kv: -kv[1]):
+        key = frozenset((u, v))
+        if key not in seen:
+            seen.add(key)
+            top.append(((u, v), imp))
+            if len(top) == k:
+                break
+    return top
 
 
 def plot_case(account, case_type, G_sub, radius_used, illicit_nodes, illicit_edge_pairs,
@@ -340,7 +358,7 @@ def main():
 
         top_feat_str = ", ".join(f"{top_features[i]} ({feat_importance[i]:.3f})" for i in top_feat_idx)
 
-        top_edges = sorted(edge_importance.items(), key=lambda kv: -kv[1])[:5]
+        top_edges = top_edge_pairs(edge_importance)
         top_edges_str = "; ".join(f"{u}->{v} ({imp:.3f})" for (u, v), imp in top_edges)
 
         neighbours = set(G_multi.predecessors(account)) | set(G_multi.successors(account))

@@ -24,8 +24,10 @@ export function SubgraphView({ subgraph, explanation }: Props) {
 
   const importanceByEdge = useMemo(() => {
     const map = new Map<string, number>();
+    // Importance is per account pair, so match the edge in either direction.
     for (const e of explanation?.top_edges ?? []) {
       map.set(`${e.source}->${e.target}`, e.importance);
+      map.set(`${e.target}->${e.source}`, e.importance);
     }
     return map;
   }, [explanation]);

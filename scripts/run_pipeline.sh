@@ -72,8 +72,8 @@ else
   log "Step 2/7 Graph construction: RUN"
   python src/build_graph.py
   UPSTREAM_CHANGED=true
-  # The old cycle cache belongs to the old graph.
-  rm -f data/processed/all_cycles_cache.pkl
+  # Old caches belong to the old graph.
+  rm -f data/processed/all_cycles_cache.pkl data/processed/graph_metrics_cache.pkl
 fi
 
 # Step 3: Graph analysis (skip only if both report and cycle cache exist)

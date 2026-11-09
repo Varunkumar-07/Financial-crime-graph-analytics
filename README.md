@@ -19,12 +19,14 @@ set. Test set: 103,016 accounts, of which 1,271 are illicit.
 
 | Model         | AUC-ROC | AUC-PR | Precision | Recall | F1     |
 |---------------|---------|--------|-----------|--------|--------|
-| XGBoost       | 0.8534  | 0.1229 | 0.0918    | 0.3698 | 0.1470 |
-| Random Forest | 0.8470  | 0.0864 | 0.0673    | 0.4186 | 0.1159 |
-| **GraphSAGE** | **0.9179** | **0.2470** | **0.1639** | **0.4784** | **0.2442** |
+| XGBoost       | 0.8545  | 0.1276 | 0.0954    | 0.3910 | 0.1533 |
+| Random Forest | 0.8470  | 0.0858 | 0.0633    | 0.4524 | 0.1110 |
+| **GraphSAGE** | **0.9143** | **0.2325** | **0.1403** | **0.5075** | **0.2198** |
 
-GraphSAGE doubles the AUC-PR of the best tree model and, at its operating point, finds 138
-more illicit accounts than XGBoost while raising 1,551 fewer false alerts.
+GraphSAGE gets 1.8x the AUC-PR of the best tree model and, at its operating point, finds 148
+more illicit accounts than XGBoost while raising 761 fewer false alerts. An ablation study
+(`notebooks/ablation_summary.md`) checks how much these numbers depend on the
+label-derived community feature, the random split and the threshold choice.
 
 ## Repository Structure
 
@@ -100,7 +102,7 @@ uvicorn api.main:app --reload --app-dir .
 
 Wait for `[startup] Ready in ...s` in the logs. Startup takes about 7 s because the
 cycle-detection cache is included at `data/processed/all_cycles_cache.pkl`; if that file is
-missing, the first run rebuilds it (about 150 to 300 s, one time only). Verify with
+missing, the first run rebuilds it (about 10 s). Verify with
 `curl http://127.0.0.1:8000/health`. Interactive API docs: http://127.0.0.1:8000/docs
 
 **2. Frontend (Vite dev server, port 5173)**
@@ -138,7 +140,7 @@ after it are rerun too. To force the models to retrain:
 scripts/run_pipeline.sh --retrain
 ```
 
-A full rebuild from raw data takes about 26 minutes. The XGBoost and Random Forest model
+A full rebuild from raw data takes about 20 minutes. The XGBoost and Random Forest model
 files are not stored in the repository, so they are recreated by this step; the dashboard
 only needs the GraphSAGE model, which is included. The frontend is not started by the script.
 

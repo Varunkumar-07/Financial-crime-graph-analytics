@@ -33,3 +33,11 @@ def test_large_account_keeps_busiest_neighbours():
     # every kept neighbour should have the max of 3 transactions with the hub
     kept = [n for n in G_sub if n != "hub"]
     assert all(G.number_of_edges("hub", n) == 3 for n in kept)
+
+
+def test_top_edge_pairs_lists_each_pair_once():
+    from explainability import top_edge_pairs
+
+    imp = {("a", "b"): 0.9, ("b", "a"): 0.9, ("a", "c"): 0.5, ("c", "a"): 0.5, ("d", "d"): 0.4}
+    top = top_edge_pairs(imp, k=5)
+    assert [frozenset(p) for p, _ in top] == [frozenset("ab"), frozenset("ac"), frozenset("d")]
