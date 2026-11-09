@@ -1,53 +1,30 @@
 """
-Convert the transaction graph + account feature table into a PyTorch
-Geometric Data object for node classification (GraphSAGE baseline).
+Builds the PyG Data object (graph + features) for GraphSAGE.
 
-Edge representation choice: the collapsed simple directed graph (1.02M
-unique edges, same one built in graph_analysis.py/feature_engineering.py)
-rather than the full MultiDiGraph (5.08M edges). Repeated transactions
-between the same pair only duplicate connectivity, not new topology —
-that repeat-count signal is already captured as node features
-(transaction_count, total_sent, total_received, etc.). Using the full
-multi-edge set would make every epoch ~5x more expensive for no new
-structural information. The collapsed edges are then made undirected
-(both directions added) since in/out-degree are already separate node
-features, so directionality isn't lost, only supplemented for message
-passing — standard practice for GNN fraud-detection baselines.
+Uses the collapsed graph (1.02M unique edges) instead of the full 5.08M,
+since repeat transactions are already captured in the node features.
+Edges are made undirected; in/out-degree stay as features.
+Node features are the same 13 used in train_baseline.py.
 
-Node feature columns: the same 13 modeling features used in
-train_baseline.py (account, community_id, is_illicit excluded/handled
-separately).
-
-Run from the project root with the venv activated:
-
-    python src/build_pyg_data.py
+Usage: python src/build_pyg_data.py
 """
 
-import sys
 import time
-from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import torch
 from torch_geometric.data import Data
 from torch_geometric.utils import to_undirected
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 import graph_analysis as ga
+from common import EXCLUDED_COLS, PROJECT_ROOT, TARGET, load_features
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-FEATURES_CSV = PROJECT_ROOT / "data" / "processed" / "account_features.csv"
 PYG_DATA_PATH = PROJECT_ROOT / "data" / "processed" / "pyg_data.pt"
-
-TARGET = "is_illicit"
-EXCLUDED_COLS = ["account", "community_id", TARGET]
 
 
 def build_data() -> Data:
     print("Loading feature table...")
-    features_df = pd.read_csv(FEATURES_CSV)
-    features_df["in_out_amount_ratio"] = features_df["in_out_amount_ratio"].fillna(-1)
+    features_df = load_features()
 
     print("Loading graph and collapsing to simple DiGraph...")
     G = ga.load_graph()
@@ -60,7 +37,7 @@ def build_data() -> Data:
         f"feature table ({len(feature_accounts)}) — cannot safely align."
     )
 
-    # Node order = feature table row order; this defines the node index space.
+    # Node index = row order in the feature table.
     accounts = features_df["account"].tolist()
     account_to_idx = {acct: i for i, acct in enumerate(accounts)}
 

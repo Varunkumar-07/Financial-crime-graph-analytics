@@ -1,46 +1,27 @@
 """
-Build a transaction graph from the IBM AML synthetic dataset
-(HI-Small_Trans.csv).
+Builds the transaction graph from HI-Small_Trans.csv.
+Accounts are nodes, transactions are directed edges (MultiDiGraph,
+since accounts can transact more than once).
 
-Each unique account is a node; each transaction is a directed edge from
-sender to receiver. Accounts can transact more than once, so the graph
-is a MultiDiGraph (parallel edges allowed) rather than a DiGraph.
-
-No cleaning, centrality, community detection, or cycle detection here —
-this script only constructs the graph and reports basic structural stats.
-
-Run from the project root with the venv activated:
-
-    python src/build_graph.py
+Usage: python src/build_graph.py
 """
 
 import pickle
 import time
-from pathlib import Path
 
 import networkx as nx
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-RAW_CSV = PROJECT_ROOT / "data" / "raw" / "HI-Small_Trans.csv"
+from common import PROJECT_ROOT, load_transactions
+
 GRAPH_PATH = PROJECT_ROOT / "data" / "processed" / "transaction_graph.gpickle"
 STATS_MD = PROJECT_ROOT / "notebooks" / "graph_stats.md"
 
 LAUNDERING_COL = "Is Laundering"
 
 
-def load_data() -> pd.DataFrame:
-    df = pd.read_csv(RAW_CSV)
-    # The source CSV has two columns both named "Account" (sender, receiver);
-    # pandas auto-suffixes the second as "Account.1". Rename for clarity,
-    # matching the convention established in eda.py.
-    df = df.rename(columns={"Account": "From Account", "Account.1": "To Account"})
-    return df
-
-
 def build_graph(df: pd.DataFrame) -> nx.MultiDiGraph:
-    # Amount Paid / Payment Currency represent the transaction as it left
-    # the sender; used as the canonical "amount"/"currency" edge attrs.
+    # Use the sender-side amount/currency as the edge values.
     edge_df = df.rename(
         columns={
             "Timestamp": "timestamp",
@@ -103,7 +84,7 @@ def compute_stats(graph: nx.MultiDiGraph, df: pd.DataFrame) -> str:
 def main() -> None:
     t0 = time.time()
     print("Loading data...")
-    df = load_data()
+    df = load_transactions()
     print(f"  {len(df):,} rows loaded in {time.time() - t0:.1f}s")
 
     t1 = time.time()

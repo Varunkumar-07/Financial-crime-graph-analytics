@@ -7,7 +7,7 @@ import { useCaseStatus } from "../context/CaseStatusContext";
 import "./Dashboard.css";
 
 const PAGE_SIZE = 25;
-const PAGE_WINDOW_RADIUS = 2; // nearby page buttons shown on each side of the current page
+const PAGE_WINDOW_RADIUS = 2; // page buttons on each side
 
 const SORT_LABELS: Record<FlaggedSortBy, string> = {
   risk_score: "Risk Score",
@@ -16,12 +16,7 @@ const SORT_LABELS: Record<FlaggedSortBy, string> = {
   cycle_count: "Cycles",
 };
 
-// Statuses that are NEVER a default — an account only ever gets one of
-// these through an explicit click, which CaseStatusContext always records.
-// That makes this list a genuinely COMPLETE record across all 12,748
-// flagged accounts, not just whatever page happens to be loaded — unlike
-// "flagged", which is everyone's starting state whether or not the
-// frontend has ever seen that account. See CaseStatusContext.tsx.
+// Statuses only set by a click, so we know every account that has them.
 const FULLY_TRACKED_STATUSES: CaseStatus[] = ["reviewing", "cleared", "escalated"];
 
 interface DisplayRow {
@@ -57,23 +52,19 @@ export function Dashboard() {
   const { getStatus, getAccountsByStatus } = useCaseStatus();
 
   const [page, setPage] = useState(1);
-  // Sorting is server-side: the full ~12.7K flagged set is sorted on the
-  // backend before pagination, so every sort/page change re-fetches (see
-  // client.ts getFlaggedAccounts). Sorting only the currently-loaded page
-  // client-side was the original bug here — it looked correct but was only
-  // ever reordering the 25 rows already on screen.
+  // Sorting happens on the backend over all flagged accounts, so each
+  // sort/page change re-fetches.
   const [sortBy, setSortBy] = useState<FlaggedSortBy>("risk_score");
   const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
   const [listing, setListing] = useState<FlaggedAccountsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [pageInput, setPageInput] = useState("1");
 
-  // "Reviewing" / "Cleared" / "Escalated" get their own full-dataset view —
-  // see FULLY_TRACKED_STATUSES. "All statuses" and "Flagged" stay on the
-  // normal server-paginated path below.
+  // Reviewing/Cleared/Escalated use the full list; others use server paging.
   const isTouchedMode = FULLY_TRACKED_STATUSES.includes(statusFilter as CaseStatus);
   const touchedIds = useMemo(
     () => (isTouchedMode ? getAccountsByStatus(statusFilter as CaseStatus) : []),
@@ -83,12 +74,21 @@ export function Dashboard() {
   const [touchedLoading, setTouchedLoading] = useState(false);
   const [touchedError, setTouchedError] = useState<string | null>(null);
 
+  // Wait for typing to pause before searching on the backend.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedSearch(search);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
 
-    getFlaggedAccounts(page, PAGE_SIZE, sortBy, sortOrder)
+    getFlaggedAccounts(page, PAGE_SIZE, sortBy, sortOrder, isTouchedMode ? "" : debouncedSearch)
       .then((resp) => {
         if (cancelled) return;
         setListing(resp);
@@ -104,7 +104,7 @@ export function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [page, sortBy, sortOrder]);
+  }, [page, sortBy, sortOrder, debouncedSearch, isTouchedMode]);
 
   useEffect(() => {
     setPageInput(String(page));
@@ -140,8 +140,7 @@ export function Dashboard() {
     return () => {
       cancelled = true;
     };
-    // touchedIds is a fresh array every render (getAccountsByStatus rebuilds
-    // it); .join(",") gives a stable, correct dependency instead.
+    // join(",") keeps the dependency stable across renders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTouchedMode, touchedIds.join(",")]);
 
@@ -152,8 +151,7 @@ export function Dashboard() {
         const q = search.trim().toLowerCase();
         filtered = filtered.filter((a) => a.account_id.toLowerCase().includes(q));
       }
-      // touchedRows is the COMPLETE matching set (not a page), so — unlike
-      // the bug this all started from — sorting it client-side is correct.
+      // Full set, so client-side sorting is fine here.
       const getVal = SORT_VALUE[sortBy];
       return [...filtered].sort((a, b) => {
         const diff = getVal(a) - getVal(b);
@@ -162,16 +160,10 @@ export function Dashboard() {
     }
 
     if (!listing) return [];
+    // Search is already applied on the backend.
     let filtered: DisplayRow[] = listing.accounts;
-    if (search.trim()) {
-      const q = search.trim().toLowerCase();
-      filtered = filtered.filter((a) => a.account_id.toLowerCase().includes(q));
-    }
     if (statusFilter === "flagged") {
-      // Page-scoped on purpose — see the note rendered near the status
-      // dropdown. "Flagged" is everyone's default, so a complete search
-      // would require knowing every one of the 12,748 accounts' status,
-      // which the client only knows for accounts it has actually loaded.
+      // Current page only: we can't know "flagged" status for unloaded accounts.
       filtered = filtered.filter((a) => getStatus(a.account_id) === "flagged");
     }
     return filtered;
@@ -184,7 +176,7 @@ export function Dashboard() {
       setSortBy(key);
       setSortOrder("desc");
     }
-    setPage(1); // re-sorting starts from the top of the newly-ordered full set
+    setPage(1); // back to first page
   }
 
   function sortArrow(key: FlaggedSortBy) {
@@ -222,6 +214,7 @@ export function Dashboard() {
             listing && (
               <p className="dashboard-subtitle">
                 {listing.total_flagged.toLocaleString()} accounts above threshold{" "}
+                {debouncedSearch.trim() && <>matching <code>{debouncedSearch.trim()}</code>{" "}</>}
                 <code>{listing.threshold.toFixed(4)}</code> — sorted by{" "}
                 <strong>{SORT_LABELS[listing.sort_by]}</strong> ({listing.sort_order}) — page{" "}
                 {listing.page} of {listing.total_pages.toLocaleString()}
@@ -233,7 +226,7 @@ export function Dashboard() {
           <input
             className="search-input"
             placeholder={
-              isTouchedMode ? "Filter these results by account ID..." : "Filter this page by account ID..."
+              isTouchedMode ? "Filter these results by account ID..." : "Search flagged accounts by ID..."
             }
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -249,7 +242,7 @@ export function Dashboard() {
       </div>
 
       <p className="status-filter-note">
-        Reviewing / Cleared / Escalated search the full 12,748 accounts. Flagged only checks the
+        Reviewing / Cleared / Escalated search all flagged accounts. Flagged only checks the
         current page (it's everyone's default, so this can't be a complete search).
       </p>
 
@@ -302,7 +295,7 @@ export function Dashboard() {
                   <td colSpan={6} className="empty-row">
                     {isTouchedMode
                       ? `No accounts are currently marked ${statusFilter}.`
-                      : "No accounts match the current filters on this page."}
+                      : "No flagged accounts match the current filters."}
                   </td>
                 </tr>
               )}

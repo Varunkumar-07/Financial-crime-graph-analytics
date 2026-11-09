@@ -23,5 +23,6 @@ class SubgraphResponse(BaseModel):
     hops: int = Field(..., description="Actual hop radius used (2 if the neighborhood is small enough, else 1)")
     node_count: int
     edge_count: int
+    truncated: bool = Field(False, description="True if only the busiest neighbours are included")
     nodes: list[SubgraphNode]
     edges: list[SubgraphEdge]

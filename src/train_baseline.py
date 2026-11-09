@@ -1,36 +1,17 @@
 """
-Baseline supervised models on the per-account feature table: XGBoost
-(primary) and Random Forest (secondary comparison), both handling the
-1.23% positive rate via class weighting only (no SMOTE/oversampling
-in this first pass).
+Trains the XGBoost and Random Forest baselines (class weighting for the
+1.23% positive rate).
 
-Feature selection notes:
-  - `account` is an identifier, not a feature.
-  - `community_id` is excluded as a raw feature: it's an arbitrary,
-    high-cardinality (115,975-value) label with no ordinal meaning.
-    Phase 6 established that `community_illicit_density` and
-    `community_size` are the informative, model-ready derivatives of
-    community membership — those are kept.
-  - `in_out_amount_ratio` has 18,085 NaNs (accounts that never sent,
-    so the ratio is undefined). Imputed with -1, a value the true
-    ratio (always >= 0) can never take, so tree splits can isolate
-    these "never sent" accounts as their own group rather than being
-    silently dropped or conflated with a real ratio of 0.
+- `account` and `community_id` are dropped (ID / arbitrary label).
+- Missing `in_out_amount_ratio` (never sent) is set to -1.
 
-No GNN work here — classical baselines and evaluation only.
-
-Run from the project root with the venv activated:
-
-    python src/train_baseline.py
+Usage: python src/train_baseline.py
 """
 
 import json
 import pickle
-import sys
 import time
-from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.ensemble import RandomForestClassifier
@@ -38,49 +19,34 @@ from sklearn.metrics import (
     average_precision_score,
     confusion_matrix,
     f1_score,
-    precision_recall_curve,
     precision_score,
     recall_score,
     roc_auc_score,
 )
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+from common import EXCLUDED_COLS, PROJECT_ROOT, TARGET, f2_optimal_threshold, get_feature_cols, load_features
 from splits import RANDOM_STATE, split_indices
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-FEATURES_CSV = PROJECT_ROOT / "data" / "processed" / "account_features.csv"
 XGB_MODEL_PATH = PROJECT_ROOT / "data" / "processed" / "xgboost_baseline.json"
 RF_MODEL_PATH = PROJECT_ROOT / "data" / "processed" / "random_forest_baseline.pkl"
 REPORT_MD = PROJECT_ROOT / "notebooks" / "baseline_model_summary.md"
 METRICS_JSON = PROJECT_ROOT / "data" / "processed" / "baseline_metrics.json"
 
-TARGET = "is_illicit"
-EXCLUDED_COLS = ["account", "community_id", TARGET]
 
-
-def load_features() -> pd.DataFrame:
-    df = pd.read_csv(FEATURES_CSV)
-    df["in_out_amount_ratio"] = df["in_out_amount_ratio"].fillna(-1)
-    return df
-
-
-def get_feature_cols(df: pd.DataFrame) -> list:
-    return [c for c in df.columns if c not in EXCLUDED_COLS]
-
-
-def f2_optimal_threshold(y_true, y_proba):
-    precision, recall, thresholds = precision_recall_curve(y_true, y_proba)
-    precision, recall = precision[:-1], recall[:-1]  # drop the sentinel point (thresh=inf)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        f2 = 5 * precision * recall / (4 * precision + recall)
-    f2 = np.nan_to_num(f2)
-    best_idx = np.argmax(f2)
-    return thresholds[best_idx], f2[best_idx], precision[best_idx], recall[best_idx]
+def make_xgboost(scale_pos_weight):
+    return xgb.XGBClassifier(
+        n_estimators=300,
+        max_depth=6,
+        learning_rate=0.1,
+        scale_pos_weight=scale_pos_weight,
+        eval_metric="aucpr",
+        random_state=RANDOM_STATE,
+        n_jobs=-1,
+    )
 
 
 def evaluate_model(name, y_true, y_proba, y_val, val_proba):
-    """Test-set metrics. The F2-optimal threshold is chosen on the
-    VALIDATION set and only applied to the test set."""
+    """Test metrics, using the F2 threshold picked on validation."""
     auc_roc = roc_auc_score(y_true, y_proba)
     auc_pr = average_precision_score(y_true, y_proba)
 
@@ -152,8 +118,7 @@ def main() -> None:
     X = df[feature_cols]
     y = df[TARGET]
 
-    # Shared 70/10/20 split (splits.py) — identical to the GraphSAGE split,
-    # so all three models are scored on the same test accounts.
+    # Same split as GraphSAGE (splits.py)
     train_idx, val_idx, test_idx = split_indices(y.values)
     X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
     X_val, y_val = X.iloc[val_idx], y.iloc[val_idx]
@@ -167,22 +132,14 @@ def main() -> None:
     scale_pos_weight = n_neg / n_pos
     print(f"  scale_pos_weight (train neg/pos): {scale_pos_weight:.2f}")
 
-    # --- XGBoost ---
+    # XGBoost
     print("Training XGBoost...")
     t0 = time.time()
-    xgb_model = xgb.XGBClassifier(
-        n_estimators=300,
-        max_depth=6,
-        learning_rate=0.1,
-        scale_pos_weight=scale_pos_weight,
-        eval_metric="aucpr",
-        random_state=RANDOM_STATE,
-        n_jobs=-1,
-    )
+    xgb_model = make_xgboost(scale_pos_weight)
     xgb_model.fit(X_train, y_train)
     print(f"  Done in {time.time() - t0:.1f}s")
 
-    # --- Random Forest ---
+    # Random Forest
     print("Training Random Forest...")
     t0 = time.time()
     rf_model = RandomForestClassifier(
@@ -195,7 +152,7 @@ def main() -> None:
     rf_model.fit(X_train, y_train)
     print(f"  Done in {time.time() - t0:.1f}s")
 
-    # --- Evaluation ---
+    # Evaluation
     print("Evaluating on test set...")
     xgb_proba = xgb_model.predict_proba(X_test)[:, 1]
     rf_proba = rf_model.predict_proba(X_test)[:, 1]
@@ -208,13 +165,13 @@ def main() -> None:
     print(f"XGBoost: AUC-ROC={xgb_eval['auc_roc']:.4f}, AUC-PR={xgb_eval['auc_pr']:.4f}")
     print(f"Random Forest: AUC-ROC={rf_eval['auc_roc']:.4f}, AUC-PR={rf_eval['auc_pr']:.4f}")
 
-    # --- Feature importance ---
+    # Feature importance
     xgb_importance = pd.Series(
         xgb_model.get_booster().get_score(importance_type="gain"), name="xgb_gain"
     )
-    # get_score keys are feature names only if X_train had them (DataFrame input preserves this)
+    # Keys are feature names because X_train is a DataFrame
     xgb_importance = xgb_importance.reindex(feature_cols).fillna(0.0)
-    xgb_importance = xgb_importance / xgb_importance.sum()  # normalize to sum to 1
+    xgb_importance = xgb_importance / xgb_importance.sum()  # normalize
 
     rf_importance = pd.Series(rf_model.feature_importances_, index=feature_cols, name="rf_importance")
 
@@ -225,7 +182,7 @@ def main() -> None:
     ) / 2
     importance_df = importance_df.sort_values("avg_rank")
 
-    # --- Save models ---
+    # Save models
     XGB_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     xgb_model.save_model(str(XGB_MODEL_PATH))
     with open(RF_MODEL_PATH, "wb") as f:
@@ -244,7 +201,7 @@ def main() -> None:
     metrics["feature_importance_xgb_gain"] = xgb_importance.sort_values(ascending=False).to_dict()
     METRICS_JSON.write_text(json.dumps(metrics, indent=2))
 
-    # --- Report ---
+    # Report
     lines = [
         "# Baseline Model Summary",
         "",

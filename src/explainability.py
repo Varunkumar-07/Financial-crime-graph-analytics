@@ -1,40 +1,21 @@
 """
-Explainability layer for the GraphSAGE fraud-risk model: for a handful
-of sample accounts (test set only), show the local sub-graph and the
-GNNExplainer-derived attribution that justifies the model's prediction,
-alongside the account's key engineered features.
+Explains GraphSAGE predictions for a few test-set accounts.
 
-Pipeline per account:
-  1. Reproduce the exact train/val/test split, feature preprocessing,
-     and F2-optimal threshold from train_gnn.py (same random_state),
-     so TP/FN/FP labels here are consistent with the reported metrics.
-  2. Extract a small 1-2 hop ego-subgraph (from the ORIGINAL MultiDiGraph,
-     so real is_laundering edge labels are available) for the picture.
-  3. Extract a 3-hop subgraph (matching the model's 3 SAGEConv layers)
-     from the collapsed PyG graph and run GNNExplainer on it — this is
-     the actual attribution step, not just a structural plot.
-  4. Cross-reference cycle membership: cycle detection (2-6 length) is
-     recomputed ONCE for the whole graph, reusing the exact functions
-     from graph_analysis.py (same methodology/caveats — see that
-     module for the giant-SCC partial-sample note), then each sample
-     account's specific cycle(s) are looked up.
-  5. Cross-reference community membership from account_features.csv.
+For each account:
+  1. Reuse the split, preprocessing and threshold from train_gnn.py.
+  2. Draw its 1-2 hop subgraph from the original graph.
+  3. Run GNNExplainer on its 3-hop subgraph (one hop per SAGEConv layer).
+  4. Look up its cycles (shared cycle cache from graph_analysis.py).
+  5. Add its community info from account_features.csv.
 
-GNNExplainer compatibility check (done before writing this script):
-confirmed working with GraphSAGE via the standard Explainer API, no
-NeighborLoader needed (full-batch model, subgraph passed directly).
-Timing: 0.68s on a 2,381-node 3-hop subgraph, 2.82s on a 14,916-node
-one — negligible for 4 accounts.
+GNNExplainer takes ~0.7-3s per account.
 
-Run from the project root with the venv activated:
-
-    python src/explainability.py
+Usage: python src/explainability.py
 """
 
 import json
-import sys
 import time
-from pathlib import Path
+from collections import Counter
 
 import matplotlib
 
@@ -50,12 +31,11 @@ import torch.nn.functional as F
 from torch_geometric.explain import Explainer, GNNExplainer
 from torch_geometric.utils import k_hop_subgraph
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 import graph_analysis as ga
-from splits import RANDOM_STATE, split_indices  # noqa: E402
-from train_gnn import GraphSAGE, f2_optimal_threshold, preprocess_features
+from common import PROJECT_ROOT, f2_optimal_threshold
+from splits import RANDOM_STATE, split_indices
+from train_gnn import GraphSAGE, preprocess_features
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = PROJECT_ROOT / "notebooks" / "explainability"
 SUMMARY_MD = PROJECT_ROOT / "notebooks" / "explainability_summary.md"
 CASES_JSON = PROJECT_ROOT / "notebooks" / "explainability_cases.json"
@@ -68,8 +48,8 @@ CASE_LABELS = {
 }
 
 VIZ_MAX_NODES = 40  # use 2-hop viz radius if it stays under this, else 1-hop
-# Case-selection eligibility: test-set accounts in at least one detected
-# cycle whose 1-hop neighbourhood is small enough to draw legibly.
+VIZ_MAX_NEIGHBOURS = 150  # big accounts: draw only their busiest neighbours
+# Eligible cases: test accounts in a cycle, small enough to draw.
 MIN_NEIGHBOURS, MAX_NEIGHBOURS = 5, 39
 EXPLAIN_HOPS = 3    # matches the model's 3 SAGEConv layers
 
@@ -92,7 +72,7 @@ def setup_model_and_data():
         out = model(x, data.edge_index)
         proba_all = F.softmax(out, dim=1)[:, 1].numpy()
 
-    thresh, _ = f2_optimal_threshold(y_np[val_idx], proba_all[val_idx])
+    thresh, _, _, _ = f2_optimal_threshold(y_np[val_idx], proba_all[val_idx])
 
     return {
         "data": data, "model": model, "x": x, "y_np": y_np,
@@ -102,9 +82,7 @@ def setup_model_and_data():
 
 
 def select_samples(ctx, cycle_count):
-    """Pick the four case-study accounts by a fixed rule rather than by hand,
-    so the selection is reproducible after any retraining. Among eligible
-    test-set accounts (see MIN/MAX_NEIGHBOURS, cycle_count >= 1):
+    """Pick the 4 case-study accounts by a fixed rule (reproducible):
       - true_positive_confident: illicit, flagged, highest probability
       - true_positive_marginal: illicit, flagged, lowest probability
       - false_negative:         illicit, not flagged, highest probability
@@ -132,13 +110,8 @@ def select_samples(ctx, cycle_count):
 
 
 def get_cycles_cached():
-    """Thin wrapper around graph_analysis.get_cycle_analysis_cached() —
-    that function (and its disk cache at data/processed/all_cycles_cache.pkl)
-    used to be duplicated locally in this module; it's now the single
-    shared source used by graph_analysis.py, this module, and the API, so
-    all three stay consistent and only the first caller ever pays the
-    ~150-300s detection cost. Preserves this module's original
-    (all_cycles, G) return shape for existing callers.
+    """Wrapper around graph_analysis.get_cycle_analysis_cached().
+    Returns (all_cycles, G).
     """
     G = ga.load_graph()
     simple = ga.build_simple_digraph(G)
@@ -146,8 +119,10 @@ def get_cycles_cached():
     return result["all_cycles"], G
 
 
-def get_viz_subgraph(account, data, G_multi):
-    account_to_idx = {a: i for i, a in enumerate(data.accounts)}
+def get_viz_subgraph(account, data, G_multi, account_to_idx=None):
+    """Returns (subgraph, hops used, truncated)."""
+    if account_to_idx is None:
+        account_to_idx = {a: i for i, a in enumerate(data.accounts)}
     idx = account_to_idx[account]
 
     subset2, _, _, _ = k_hop_subgraph(idx, num_hops=2, edge_index=data.edge_index, relabel_nodes=True)
@@ -160,16 +135,24 @@ def get_viz_subgraph(account, data, G_multi):
         radius_used = 1
 
     sub_accounts = [data.accounts[i] for i in subset.tolist()]
+    truncated = len(sub_accounts) > VIZ_MAX_NEIGHBOURS + 1
+    if truncated:
+        # Keep the neighbours with the most transactions with this account.
+        counts = Counter(v for _, v in G_multi.out_edges(account))
+        counts.update(u for u, _ in G_multi.in_edges(account))
+        counts.pop(account, None)
+        sub_accounts = [account] + [n for n, _ in counts.most_common(VIZ_MAX_NEIGHBOURS)]
     G_sub = G_multi.subgraph(sub_accounts).copy()
-    return G_sub, radius_used
+    return G_sub, radius_used, truncated
 
 
 def find_account_cycles(account, all_cycles):
     return [c for c in all_cycles if account in c]
 
 
-def run_gnn_explainer(account, model, x, data):
-    account_to_idx = {a: i for i, a in enumerate(data.accounts)}
+def run_gnn_explainer(account, model, x, data, account_to_idx=None):
+    if account_to_idx is None:
+        account_to_idx = {a: i for i, a in enumerate(data.accounts)}
     idx = account_to_idx[account]
     subset, sub_edge_index, mapping, _ = k_hop_subgraph(
         idx, num_hops=EXPLAIN_HOPS, edge_index=data.edge_index, relabel_nodes=True
@@ -224,7 +207,7 @@ def plot_case(account, case_type, G_sub, radius_used, illicit_nodes, illicit_edg
             node_edgecolors.append("gold" if same_comm else "gray")
             node_linewidths.append(2.2 if same_comm else 0.8)
 
-    # Simple directed multigraph -> collapse for drawing, track illicit/cycle/importance per pair
+    # Collapse to one edge per pair for drawing
     simple_edges = {}
     for u, v, edata in G_sub.edges(data=True):
         key = (u, v)
@@ -254,7 +237,7 @@ def plot_case(account, case_type, G_sub, radius_used, illicit_nodes, illicit_edg
     for (u, v), color, width, style in zip(draw_edges, edge_colors, edge_widths, edge_styles):
         nx.draw_networkx_edges(G_sub, pos, ax=ax_graph, edgelist=[(u, v)], edge_color=color,
                                 width=width, style=style, arrows=True, arrowsize=12, alpha=0.8)
-    # Labels sit just below each node so they never cover the node or its self-loop.
+    # Put labels just below each node
     label_pos = {n: (x, y - 0.09) for n, (x, y) in pos.items()}
     nx.draw_networkx_labels(G_sub, label_pos, ax=ax_graph, font_size=9, font_family="monospace",
                             bbox=dict(facecolor="white", edgecolor="none", alpha=0.8, pad=0.5))
@@ -336,13 +319,13 @@ def main():
         proba = proba_all[idx]
         y_true = y_np[idx]
 
-        G_sub, radius_used = get_viz_subgraph(account, data, G_multi)
+        G_sub, radius_used, _ = get_viz_subgraph(account, data, G_multi, account_to_idx)
         account_cycles = find_account_cycles(account, all_cycles)
         print(f"  Sub-graph: {radius_used}-hop, {len(G_sub)} nodes, {G_sub.number_of_edges()} edges. "
               f"Cycles containing this account: {len(account_cycles)}")
 
         t0 = time.time()
-        edge_importance, feat_importance = run_gnn_explainer(account, model, x, data)
+        edge_importance, feat_importance = run_gnn_explainer(account, model, x, data, account_to_idx)
         print(f"  GNNExplainer done in {time.time()-t0:.2f}s")
 
         feature_row = features_df.loc[account]
@@ -438,7 +421,7 @@ def write_summary(sections):
             "",
         ]
 
-    # Case-specific honest narrative
+    # Per-case explanation text
     by_type = {s["case_type"]: s for s in sections}
     narrative = [
         "## Case-by-case narrative",

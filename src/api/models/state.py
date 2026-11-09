@@ -1,18 +1,10 @@
 """
-Loads the trained GraphSAGE model, the PyG graph, the original
-transaction MultiDiGraph, the feature table, and the cached cycle set
-ONCE into a module-level AppState singleton, reused across all
-requests. Nothing here re-loads or re-computes per-request except
-GNNExplainer (which is inherently query-specific — see explanation.py).
-
-Reuses the exact preprocessing, split, and threshold logic from
-train_gnn.py / explainability.py so API predictions are identical to
-the ones reported in earlier phases (same random_state=42 split).
+Loads the model, graphs, feature table and cycle cache once at startup
+and shares them across requests. Uses the same preprocessing, split and
+threshold as train_gnn.py, so predictions match the reported results.
 """
 
-import sys
 import time
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -20,15 +12,11 @@ import torch
 import torch.nn.functional as F
 from sklearn.metrics import average_precision_score, roc_auc_score
 
-SRC_DIR = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(SRC_DIR))
-
-import graph_analysis as ga  # noqa: E402
-from explainability import get_cycles_cached  # noqa: E402
-from splits import split_indices  # noqa: E402
-from train_gnn import GraphSAGE, f2_optimal_threshold, preprocess_features  # noqa: E402
-
-PROJECT_ROOT = SRC_DIR.parent
+import graph_analysis as ga
+from common import PROJECT_ROOT, f2_optimal_threshold
+from explainability import get_cycles_cached
+from splits import split_indices
+from train_gnn import GraphSAGE, preprocess_features
 
 
 class AppState:
@@ -57,14 +45,10 @@ class AppState:
             out = self.model(self.x, self.data.edge_index)
             self.proba_all = F.softmax(out, dim=1)[:, 1].numpy()
 
-        self.threshold, _ = f2_optimal_threshold(y_np[val_idx], self.proba_all[val_idx])
+        self.threshold, _, _, _ = f2_optimal_threshold(y_np[val_idx], self.proba_all[val_idx])
         self.y_np = y_np
 
-        # Live eval metrics for the model actually loaded, computed from data
-        # already in memory (no extra inference) — this is what /model/info
-        # serves, so the frontend never shows numbers that can drift from the
-        # model actually on disk (see notebooks/integration_test_summary.md
-        # for the incident that prompted this).
+        # Test metrics for the loaded model, served by /model/info.
         self.auc_roc = float(roc_auc_score(y_np[test_idx], self.proba_all[test_idx]))
         self.auc_pr = float(average_precision_score(y_np[test_idx], self.proba_all[test_idx]))
         self.n_test_accounts = int(len(test_idx))
@@ -80,12 +64,7 @@ class AppState:
         flagged_mask = self.proba_all >= self.threshold
         flagged_idx = np.where(flagged_mask)[0]
         flagged_account_ids = [self.data.accounts[i] for i in flagged_idx]
-        # One row per flagged account, columns for every sortable field the
-        # /accounts/flagged endpoint supports — sorted server-side, on the
-        # full flagged set, on every request (see accounts.py). Kept as a
-        # DataFrame (not pre-sorted at startup) since 12,748 rows is cheap
-        # to re-sort per request and this avoids maintaining N precomputed
-        # orderings that could drift out of sync.
+        # Flagged accounts with sortable columns; sorted per request in accounts.py.
         flagged_df = self.features_df.loc[
             flagged_account_ids, ["total_degree", "community_illicit_density", "cycle_count"]
         ].copy()

@@ -1,30 +1,15 @@
 """
-Exploratory data analysis for the IBM AML synthetic transaction dataset
-(HI-Small_Trans.csv).
+Basic EDA on HI-Small_Trans.csv (read-only).
+Writes the summary to notebooks/eda_summary.md.
 
-Read-only EDA: no cleaning, filtering, or graph construction here.
-Run from the project root with the venv activated:
-
-    python src/eda.py
-
-Writes a Markdown summary to notebooks/eda_summary.md.
+Usage: python src/eda.py
 """
-
-from pathlib import Path
 
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-RAW_CSV = PROJECT_ROOT / "data" / "raw" / "HI-Small_Trans.csv"
+from common import PROJECT_ROOT, load_transactions
+
 SUMMARY_MD = PROJECT_ROOT / "notebooks" / "eda_summary.md"
-
-
-def load_data() -> pd.DataFrame:
-    df = pd.read_csv(RAW_CSV)
-    # The source CSV has two columns both named "Account" (sender, receiver);
-    # pandas auto-suffixes the second as "Account.1". Rename for clarity.
-    df = df.rename(columns={"Account": "From Account", "Account.1": "To Account"})
-    return df
 
 
 def build_summary(df: pd.DataFrame) -> str:
@@ -78,7 +63,7 @@ def build_summary(df: pd.DataFrame) -> str:
 
 
 def main() -> None:
-    df = load_data()
+    df = load_transactions()
     summary = build_summary(df)
     SUMMARY_MD.parent.mkdir(parents=True, exist_ok=True)
     SUMMARY_MD.write_text(summary)

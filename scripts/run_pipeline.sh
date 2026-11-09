@@ -1,26 +1,13 @@
 #!/usr/bin/env bash
 #
-# End-to-end pipeline: raw data -> transaction graph -> graph analysis
-# -> feature table -> trained models -> running backend API.
+# Runs the full pipeline: raw data -> graph -> analysis -> features -> models -> API.
+# Steps whose output already exists are skipped. Use --retrain to force model training.
 #
-# Idempotent by default: each stage is skipped if its expected output
-# file(s) already exist, so re-running this script after a successful
-# run just starts the backend in a few seconds. Pass --retrain to force
-# the model-training stages (classical baselines + GraphSAGE) to rerun
-# even if trained models already exist.
-#
-# NOT automated by this script (see notebooks/integration_test_summary.md
-# for the full list):
-#   - Downloading the raw Kaggle dataset into data/raw/ (requires Kaggle
-#     authentication) — this script fails fast with a clear message if
-#     data/raw/HI-Small_Trans.csv is missing, rather than trying to fetch it.
-#   - Creating the Python venv / installing requirements.txt.
-#   - Installing frontend npm dependencies / starting the frontend dev
-#     server (out of this script's scope — see README.md).
+# Not handled here: downloading the Kaggle data, setting up the venv, and the frontend.
 #
 # Usage:
-#   scripts/run_pipeline.sh              # skip stages whose output exists
-#   scripts/run_pipeline.sh --retrain    # force model-training stages to rerun
+#   scripts/run_pipeline.sh            # skip finished steps
+#   scripts/run_pipeline.sh --retrain  # retrain models
 #
 set -euo pipefail
 
@@ -33,7 +20,7 @@ for arg in "$@"; do
   case "$arg" in
     --retrain) RETRAIN=true ;;
     -h|--help)
-      sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -50,8 +37,7 @@ BACKEND_PID_FILE="$RUN_DIR/backend.pid"
 
 log() { echo "[pipeline $(date '+%H:%M:%S')] $*"; }
 
-# --- Prerequisite checks (fail fast with an actionable message rather
-# than a confusing downstream Python traceback) ---
+# Check prerequisites
 if [ ! -f "$PROJECT_ROOT/venv/bin/activate" ]; then
   echo "ERROR: venv not found at $PROJECT_ROOT/venv" >&2
   echo "  Manual step required: python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt" >&2
@@ -68,73 +54,81 @@ fi
 
 log "Starting pipeline (retrain=$RETRAIN)"
 
-# --- Step 1: EDA ---
-# EDA writes only a report (no data/processed artifact), so its skip-check
-# is the report file itself.
+# Set when graph, cycles or features are rebuilt, so later steps rerun too.
+UPSTREAM_CHANGED=false
+
+# Step 1: EDA (only writes a report, so check for that)
 if [ -f "notebooks/eda_summary.md" ]; then
-  log "Step 1/6 EDA: SKIP (notebooks/eda_summary.md exists)"
+  log "Step 1/7 EDA: SKIP (notebooks/eda_summary.md exists)"
 else
-  log "Step 1/6 EDA: RUN"
+  log "Step 1/7 EDA: RUN"
   python src/eda.py
 fi
 
-# --- Step 2: Graph construction ---
+# Step 2: Build the graph
 if [ -f "data/processed/transaction_graph.gpickle" ]; then
-  log "Step 2/6 Graph construction: SKIP (data/processed/transaction_graph.gpickle exists)"
+  log "Step 2/7 Graph construction: SKIP (data/processed/transaction_graph.gpickle exists)"
 else
-  log "Step 2/6 Graph construction: RUN"
+  log "Step 2/7 Graph construction: RUN"
   python src/build_graph.py
+  UPSTREAM_CHANGED=true
+  # The old cycle cache belongs to the old graph.
+  rm -f data/processed/all_cycles_cache.pkl
 fi
 
-# --- Step 3: Graph analysis (centrality, community, cycles) ---
-# Skips only if BOTH the report and the cycle-detection disk cache exist —
-# checking the report alone would be wrong: if data/processed/ was wiped
-# but notebooks/ wasn't, the report would still be there while the cache
-# (and everything downstream needs) would be gone.
+# Step 3: Graph analysis (skip only if both report and cycle cache exist)
 if [ -f "notebooks/graph_analysis_summary.md" ] && [ -f "data/processed/all_cycles_cache.pkl" ]; then
-  log "Step 3/6 Graph analysis: SKIP (report + cycle cache both exist)"
+  log "Step 3/7 Graph analysis: SKIP (report + cycle cache both exist)"
 else
-  log "Step 3/6 Graph analysis: RUN (betweenness/Louvain always recomputed here; cycle detection uses/rebuilds the disk cache internally)"
+  log "Step 3/7 Graph analysis: RUN"
+  [ -f "data/processed/all_cycles_cache.pkl" ] || UPSTREAM_CHANGED=true
   python src/graph_analysis.py
 fi
 
-# --- Step 4: Feature engineering ---
-if [ -f "data/processed/account_features.csv" ]; then
-  log "Step 4/6 Feature engineering: SKIP (data/processed/account_features.csv exists)"
+# Step 4: Feature engineering
+if [ -f "data/processed/account_features.csv" ] && [ "$UPSTREAM_CHANGED" = false ]; then
+  log "Step 4/7 Feature engineering: SKIP (data/processed/account_features.csv exists)"
 else
-  log "Step 4/6 Feature engineering: RUN"
+  log "Step 4/7 Feature engineering: RUN"
   python src/feature_engineering.py
+  UPSTREAM_CHANGED=true
 fi
 
-# --- Step 5: Model training ---
-CLASSICAL_DONE=false
-if [ -f "data/processed/xgboost_baseline.json" ] && [ -f "data/processed/random_forest_baseline.pkl" ]; then
-  CLASSICAL_DONE=true
-fi
-if [ "$CLASSICAL_DONE" = true ] && [ "$RETRAIN" = false ]; then
-  log "Step 5a/6 Classical baselines (XGBoost/RF): SKIP (models exist; use --retrain to force)"
+# Step 5: Model training (reruns on --retrain or when features changed)
+if [ -f "data/processed/xgboost_baseline.json" ] && [ -f "data/processed/random_forest_baseline.pkl" ] \
+   && [ "$RETRAIN" = false ] && [ "$UPSTREAM_CHANGED" = false ]; then
+  log "Step 5a/7 Classical baselines (XGBoost/RF): SKIP (models exist; use --retrain to force)"
 else
-  log "Step 5a/6 Classical baselines (XGBoost/RF): RUN"
+  log "Step 5a/7 Classical baselines (XGBoost/RF): RUN"
   python src/train_baseline.py
 fi
 
-GNN_DONE=false
-if [ -f "data/processed/pyg_data.pt" ] && [ -f "data/processed/graphsage_baseline.pt" ]; then
-  GNN_DONE=true
-fi
-if [ "$GNN_DONE" = true ] && [ "$RETRAIN" = false ]; then
-  log "Step 5b/6 GraphSAGE: SKIP (model exists; use --retrain to force)"
+GNN_RETRAINED=false
+if [ -f "data/processed/pyg_data.pt" ] && [ -f "data/processed/graphsage_baseline.pt" ] \
+   && [ "$RETRAIN" = false ] && [ "$UPSTREAM_CHANGED" = false ]; then
+  log "Step 5b/7 GraphSAGE: SKIP (model exists; use --retrain to force)"
 else
-  log "Step 5b/6 GraphSAGE: RUN"
-  python src/build_pyg_data.py
+  log "Step 5b/7 GraphSAGE: RUN"
+  if [ ! -f "data/processed/pyg_data.pt" ] || [ "$UPSTREAM_CHANGED" = true ]; then
+    python src/build_pyg_data.py
+  fi
   python src/train_gnn.py
+  GNN_RETRAINED=true
 fi
 
-# --- Step 6: Start backend API ---
-if [ -f "$BACKEND_PID_FILE" ] && kill -0 "$(cat "$BACKEND_PID_FILE")" 2>/dev/null; then
-  log "Step 6/6 Backend API: already running (PID $(cat "$BACKEND_PID_FILE"))"
+# Step 6: Explainability case studies (rerun when the GNN changes)
+if [ -f "notebooks/explainability_cases.json" ] && [ "$GNN_RETRAINED" = false ]; then
+  log "Step 6/7 Explainability: SKIP (notebooks/explainability_cases.json exists)"
 else
-  log "Step 6/6 Backend API: starting..."
+  log "Step 6/7 Explainability: RUN"
+  python src/explainability.py
+fi
+
+# Step 7: Start the backend API
+if [ -f "$BACKEND_PID_FILE" ] && kill -0 "$(cat "$BACKEND_PID_FILE")" 2>/dev/null; then
+  log "Step 7/7 Backend API: already running (PID $(cat "$BACKEND_PID_FILE"))"
+else
+  log "Step 7/7 Backend API: starting..."
   (
     cd "$PROJECT_ROOT/src"
     nohup uvicorn api.main:app --host 127.0.0.1 --port 8000 > "$BACKEND_LOG" 2>&1 &

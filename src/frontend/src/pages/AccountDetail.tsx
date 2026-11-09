@@ -23,6 +23,7 @@ export function AccountDetail() {
   const [explanation, setExplanation] = useState<ExplanationResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [explaining, setExplaining] = useState(true);
+  const [explainError, setExplainError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -33,6 +34,7 @@ export function AccountDetail() {
     setRisk(null);
     setSubgraph(null);
     setExplanation(null);
+    setExplainError(null);
 
     Promise.all([getRiskScore(accountId), getSubgraph(accountId)])
       .then(([riskResp, subgraphResp]) => {
@@ -48,14 +50,14 @@ export function AccountDetail() {
         setExplaining(false);
       });
 
-    // GNNExplainer is the slow call (0.3-3s); fetch it separately so the
-    // rest of the page (risk score, subgraph) isn't blocked waiting on it.
+    // Explanation is slow (0.3-3s), so load it separately.
     getExplanation(accountId)
       .then((resp) => {
         if (!cancelled) setExplanation(resp);
       })
-      .catch(() => {
-        /* explanation is supplementary; a failure here shouldn't break the page */
+      .catch((e: unknown) => {
+        // Optional: the rest of the page still works without it.
+        if (!cancelled) setExplainError(e instanceof ApiError ? e.message : null);
       })
       .finally(() => {
         if (!cancelled) setExplaining(false);
@@ -153,13 +155,16 @@ export function AccountDetail() {
             </>
           )}
           {!explaining && !explanation && (
-            <p className="muted">Explanation unavailable for this account.</p>
+            <p className="muted">{explainError ?? "Explanation unavailable for this account."}</p>
           )}
         </div>
       </div>
 
       <div className="panel">
         <h2>Local Sub-graph ({subgraph.hops}-hop, {subgraph.node_count} nodes, {subgraph.edge_count} edges)</h2>
+        {subgraph.truncated && (
+          <p className="muted">Large account: showing only its busiest neighbours.</p>
+        )}
         <SubgraphView subgraph={subgraph} explanation={explanation} />
       </div>
     </div>

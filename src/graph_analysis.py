@@ -1,31 +1,12 @@
 """
-Graph analysis on the transaction MultiDiGraph built by build_graph.py:
-degree/betweenness centrality, Louvain community detection, and bounded
-directed-cycle detection.
+Graph analysis: centrality, Louvain communities and cycles (length 2-6).
 
-Scale notes (515K nodes / 5.08M multi-edges, collapsed to ~1.02M unique
-directed edges):
-  - Betweenness centrality is APPROXIMATED via k=500 random source
-    samples (exact Brandes betweenness is infeasible at this scale;
-    timed at ~4.7s + 0.39s/sample during development, so k=500 ~ 3-4 min).
-  - Cycle detection (length 2-6) is EXACT everywhere except one giant
-    17,075-node strongly connected component:
-      * 2-cycles and 3-cycles: found exactly, across the whole graph,
-        via direct edge/triangle lookups (polynomial, not exponential).
-      * 4-6 length cycles in the 2,927 small SCCs (max size 12): exact,
-        via nx.simple_cycles(length_bound=6).
-      * 4-6 length cycles in the giant SCC: nx.simple_cycles is a
-        generator; a full run hung for 5.5+ minutes with no result even
-        at length_bound=2 (confirmed and killed during development), so
-        it is instead consumed under a hard 120-second wall-clock cap
-        and the result is reported as a PARTIAL SAMPLE (lower bound),
-        not an exhaustive count.
+- Betweenness is approximate (k=500 samples, ~3-4 min).
+- 2/3-cycles are exact across the whole graph.
+- 4-6 cycles are exact in small SCCs; in the giant SCC (17K nodes) the
+  search is capped at 120s, so that count is a lower bound.
 
-No feature engineering or modeling here — analysis and reporting only.
-
-Run from the project root with the venv activated:
-
-    python src/graph_analysis.py
+Usage: python src/graph_analysis.py
 """
 
 import pickle
@@ -108,7 +89,7 @@ def find_2_and_3_cycles(simple: nx.DiGraph):
 
     three = set()
     for u, v in edge_set:
-        if u == v:  # a self-loop edge would yield degenerate (u, u, w) "3-cycles"
+        if u == v:  # skip self-loops
             continue
         for w in simple.successors(v):
             if w != u and w != v and (w, u) in edge_set:
@@ -144,11 +125,8 @@ CYCLES_CACHE_PATH = PROJECT_ROOT / "data" / "processed" / "all_cycles_cache.pkl"
 
 
 def compute_cycle_analysis(simple: nx.DiGraph) -> dict:
-    """Runs the full cycle-detection pipeline (2/3-cycles exact, small-SCC
-    4-6 cycles exact, giant-SCC 4-6 cycles time-capped partial sample —
-    see module docstring) and returns every piece needed both for the
-    detailed report here and for simpler downstream consumers (the flat
-    `all_cycles` set used by explainability.py / the API)."""
+    """Runs all cycle detection and returns the results, including the
+    flat `all_cycles` set used by explainability.py and the API."""
     two_cycles, three_cycles = find_2_and_3_cycles(simple)
 
     sccs = list(nx.strongly_connected_components(simple))
@@ -178,15 +156,8 @@ def compute_cycle_analysis(simple: nx.DiGraph) -> dict:
 
 
 def get_cycle_analysis_cached(simple: nx.DiGraph, cache_path=CYCLES_CACHE_PATH) -> dict:
-    """Disk-cached wrapper around compute_cycle_analysis(). Recomputing the
-    full detection (~150-300s, dominated by the giant-SCC time-capped
-    search) on every run/every process that needs it (graph_analysis.py,
-    explainability.py, the API's own startup) is wasteful since the result
-    is deterministic for a fixed graph — computed once, reused after that.
-
-    Detects and transparently discards the older cache format (a bare
-    `set`, from before this function existed) rather than erroring, so a
-    stale cache file never needs manual deletion.
+    """Cached compute_cycle_analysis() (detection takes ~150-300s).
+    Old-format caches are ignored and rebuilt.
     """
     if cache_path.exists():
         with open(cache_path, "rb") as f:
@@ -208,8 +179,7 @@ def get_cycle_analysis_cached(simple: nx.DiGraph, cache_path=CYCLES_CACHE_PATH) 
 def plot_suspicious_cluster(G: nx.MultiDiGraph, illicit_cycles: set, communities: list,
                              node_to_comm: dict, illicit_nodes: set):
     if illicit_cycles:
-        # Deterministic pick (longest, then lexicographic): set iteration
-        # order of string tuples varies with PYTHONHASHSEED.
+        # Pick longest, then alphabetical, so the result is stable.
         cluster = max(illicit_cycles, key=lambda c: (len(c), c))
         sub_nodes = list(cluster)
         title = f"Detected {len(cluster)}-account cycle containing a laundering transaction"
@@ -237,7 +207,7 @@ def plot_suspicious_cluster(G: nx.MultiDiGraph, illicit_cycles: set, communities
             sub_simple.add_edge(u, v, is_laundering=is_laundering)
 
     if illicit_cycles:
-        # Lay the cycle out in its own traversal order so the loop reads clockwise.
+        # Lay out nodes in cycle order
         angles = np.linspace(np.pi / 2, np.pi / 2 - 2 * np.pi, len(sub_nodes), endpoint=False)
         pos = {n: (np.cos(a), np.sin(a)) for n, a in zip(sub_nodes, angles)}
     else:
@@ -260,8 +230,7 @@ def plot_suspicious_cluster(G: nx.MultiDiGraph, illicit_cycles: set, communities
                            style="dotted", arrows=True, arrowsize=14, width=1.2, node_size=700)
     nx.draw_networkx_edges(sub_simple, pos, ax=ax, edgelist=flow_edges, edge_color=flow_colors,
                            arrows=True, arrowsize=24, width=3.0, node_size=700)
-    # Labels placed radially outside each node so they never overlap the
-    # node, its self-loop, or an incident edge.
+    # Put labels just outside each node
     for n, (x, y) in pos.items():
         r = (x * x + y * y) ** 0.5 or 1.0
         lx, ly = x + 0.22 * x / r, y + 0.22 * y / r
@@ -306,7 +275,7 @@ def main() -> None:
     illicit_nodes, illicit_edge_pairs = get_illicit_nodes_and_edges(G)
     print(f"  {len(illicit_nodes):,} illicit-touching accounts, {len(illicit_edge_pairs):,} illicit (u,v) pairs")
 
-    # --- Betweenness centrality (approximate) ---
+    # Betweenness centrality (approximate)
     print(f"Computing approximate betweenness centrality (k={BETWEENNESS_K})...")
     t0 = time.time()
     betweenness = nx.betweenness_centrality(simple, k=BETWEENNESS_K, seed=42, normalized=True)
@@ -315,7 +284,7 @@ def main() -> None:
     top20_betweenness = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:20]
     top20_illicit_count = sum(1 for acct, _ in top20_betweenness if acct in illicit_nodes)
 
-    # --- Louvain community detection ---
+    # Louvain communities
     print("Building undirected weighted graph for Louvain...")
     undirected = build_undirected_weighted(simple)
     print("Running Louvain community detection...")
@@ -339,7 +308,7 @@ def main() -> None:
     )
     pct_illicit_in_largest = 100 * largest_illicit_comm_count / len(illicit_comm_ids)
 
-    # --- Cycle detection (disk-cached — see get_cycle_analysis_cached docstring) ---
+    # Cycle detection (cached)
     print("Running cycle detection (cached if available)...")
     t0 = time.time()
     cycle_result = get_cycle_analysis_cached(simple)
@@ -367,12 +336,12 @@ def main() -> None:
     illicit_cycles = {c for c in all_cycles if cycle_touches_illicit(c, illicit_edge_pairs)}
     pct_illicit_cycles = 100 * len(illicit_cycles) / len(all_cycles) if all_cycles else 0.0
 
-    # --- Visualization ---
+    # Visualization
     print("Rendering suspicious cluster visualization...")
     viz_title = plot_suspicious_cluster(G, illicit_cycles, communities, node_to_comm, illicit_nodes)
     print(f"  Saved {CLUSTER_PNG} ({viz_title})")
 
-    # --- Write summary ---
+    # Write summary
     giant_scc_note = (
         "cap was hit — this is a lower bound, not exhaustive"
         if hit_cap

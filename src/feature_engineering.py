@@ -1,64 +1,28 @@
 """
-Build a per-account feature table for modeling: graph-derived features
-(degree, betweenness, Louvain community, cycle participation) combined
-with transaction-level aggregates.
+Builds the per-account feature table: graph features (degree,
+betweenness, community, cycles) plus transaction totals.
 
-Note: a `velocity` (transactions/day) feature was deliberately omitted.
-The observation window is the same constant for every account, so
-velocity is a pure linear rescaling of `transaction_count` — perfectly
-collinear with it, adding no information while splitting/distorting
-tree-based feature importance between the two (see
-notebooks/baseline_model_summary.md for the original finding).
+- No velocity feature: it's just transaction_count rescaled.
+- Graph metrics reuse graph_analysis.py (same settings).
+- community_illicit_density uses training labels only (out-of-fold for
+  training accounts), so no account sees its own label.
+- Cycle counts come from the shared cycle cache.
 
-Betweenness centrality, Louvain communities, and cycle detection were
-computed in graph_analysis.py but never persisted to disk, so this
-script recomputes them by importing and reusing the exact same
-functions and parameters (k=500 betweenness sampling, Louvain seed=42,
-120s-capped giant-SCC cycle sampling). See graph_analysis.py for full
-methodology notes and caveats on these approximations.
-
-community_illicit_density is label-derived, so it is computed from
-TRAINING-split labels only (see splits.py): validation/test accounts get
-the illicit fraction among training accounts in their Louvain community;
-training accounts get the same quantity computed out-of-fold (5 folds),
-so no account's own label ever enters its own feature value.
-
-Cycle participation is read from the shared disk cache
-(graph_analysis.get_cycle_analysis_cached), the same cycle set used by
-the explainability layer and the API, so cycle_count always agrees with
-the cycle membership shown to analysts.
-
-No modeling here — feature construction and sanity reporting only.
-
-Run from the project root with the venv activated:
-
-    python src/feature_engineering.py
+Usage: python src/feature_engineering.py
 """
 
-import sys
 import time
-from pathlib import Path
 
 import networkx as nx
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 import graph_analysis as ga  # reuse graph construction / centrality / cycle logic
+from common import FEATURES_CSV, PROJECT_ROOT, load_transactions
 from splits import RANDOM_STATE, split_indices
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-RAW_CSV = PROJECT_ROOT / "data" / "raw" / "HI-Small_Trans.csv"
-FEATURES_CSV = PROJECT_ROOT / "data" / "processed" / "account_features.csv"
 REPORT_MD = PROJECT_ROOT / "notebooks" / "feature_engineering_summary.md"
-
-
-def load_raw_df() -> pd.DataFrame:
-    df = pd.read_csv(RAW_CSV)
-    df = df.rename(columns={"Account": "From Account", "Account.1": "To Account"})
-    df["Timestamp"] = pd.to_datetime(df["Timestamp"], format="%Y/%m/%d %H:%M")
-    return df
 
 
 def compute_transaction_aggregates(df: pd.DataFrame) -> pd.DataFrame:
@@ -110,16 +74,11 @@ def compute_cycle_participation(simple: nx.DiGraph):
 
 def train_only_community_density(community_id: np.ndarray, is_illicit: np.ndarray,
                                   train_idx: np.ndarray, n_folds: int = 5) -> np.ndarray:
-    """Illicit fraction among TRAINING accounts in the same community.
+    """Illicit share of training accounts in the same community.
 
-    Validation/test accounts: computed from all training labels.
-    Training accounts: out-of-fold — the training set is split into
-    n_folds stratified folds, and each fold's value is computed only from
-    the other folds' labels. (Plain leave-one-out is avoided: within a
-    community it gives illicit members a systematically lower value than
-    licit ones, so a tree model can decode the label from it.)
-    Communities with no qualifying labelled members fall back to the
-    global training illicit rate. Only labels at train_idx are read.
+    Val/test accounts use all training labels; training accounts use
+    out-of-fold values (leave-one-out would leak the label).
+    Empty communities fall back to the overall training rate.
     """
     n_comm = int(community_id.max()) + 1
     prior = is_illicit[train_idx].mean()
@@ -143,7 +102,7 @@ def main() -> None:
     t_start = time.time()
 
     print("Loading raw transaction data...")
-    df = load_raw_df()
+    df = load_transactions(parse_timestamps=True)
 
     print("Loading graph...")
     G = ga.load_graph()
@@ -193,7 +152,7 @@ def main() -> None:
 
     features["community_id"] = features["account"].map(node_to_comm)
     features["community_size"] = features["community_id"].map(comm_size)
-    # Label-derived feature: filled in below, once is_illicit and the split exist.
+    # Filled in below once labels and split are ready.
     features["community_illicit_density"] = np.nan
 
     features["cycle_count"] = features["account"].map(cycle_count).fillna(0).astype(int)
@@ -306,9 +265,7 @@ def main() -> None:
         "|---|---|---|---|",
     ]
     for feat in corr.index:
-        # .6g (6 significant figures, switching to scientific notation for very
-        # small/large magnitudes) so tiny values like betweenness don't round to
-        # a false "0.0000" tie between classes.
+        # .6g so tiny values (e.g. betweenness) don't show as 0.0000.
         lines.append(
             f"| {feat} | {corr[feat]:.6g} | {group_means.loc[feat, 'licit_mean']:.6g} | "
             f"{group_means.loc[feat, 'illicit_mean']:.6g} |"

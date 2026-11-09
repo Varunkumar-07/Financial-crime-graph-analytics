@@ -36,10 +36,11 @@ more illicit accounts than XGBoost while raising 1,551 fewer false alerts.
   evaluation, explainability, API) and explainability figures.
 - `src/`: pipeline scripts (`eda.py`, `build_graph.py`, `graph_analysis.py`, `splits.py`,
   `feature_engineering.py`, `train_baseline.py`, `build_pyg_data.py`, `train_gnn.py`,
-  `explainability.py`).
+  `explainability.py`), shared helpers (`common.py`) and the ablation study (`ablation.py`).
 - `src/api/`: FastAPI backend (see `notebooks/api_summary.md`).
 - `src/frontend/`: React + TypeScript + Vite + Cytoscape.js dashboard.
 - `scripts/run_pipeline.sh`: end-to-end pipeline runner, from raw data to a running backend.
+- `tests/`: pytest tests for the split, features, subgraph limits and API routes.
 
 ## Requirements
 
@@ -114,9 +115,11 @@ mock data), so the backend must already be running. CORS is configured for `loca
 only (see `src/api/main.py`).
 
 Click any account to see its risk score, engineered features, GNNExplainer attribution, and
-an interactive Cytoscape.js subgraph (zoom, pan, and click to move between accounts). Case
-status (flagged / reviewing / cleared / escalated) is client-side only and resets on page
-reload.
+an interactive Cytoscape.js subgraph (zoom, pan, and click to move between accounts). For
+very large accounts only the 150 busiest neighbours are drawn, and accounts whose 3-hop
+neighbourhood exceeds 30,000 accounts are not explained. The search box searches all flagged
+accounts. Case status (flagged / reviewing / cleared / escalated) is saved in the browser's
+localStorage.
 
 ## Rebuilding the Pipeline
 
@@ -126,9 +129,10 @@ With the venv set up and the raw data in `data/raw/`, run from the project root:
 scripts/run_pipeline.sh
 ```
 
-The script runs EDA, graph construction, graph analysis, feature engineering, model training
-and finally starts the backend. Each stage is skipped if its output already exists, so a
-re-run only starts the backend. To force the models to retrain:
+The script runs EDA, graph construction, graph analysis, feature engineering, model training,
+the explainability case studies and finally starts the backend. Each stage is skipped if its
+output already exists, so a re-run only starts the backend. If a stage is rebuilt, the stages
+after it are rerun too. To force the models to retrain:
 
 ```bash
 scripts/run_pipeline.sh --retrain
@@ -138,13 +142,24 @@ A full rebuild from raw data takes about 26 minutes. The XGBoost and Random Fore
 files are not stored in the repository, so they are recreated by this step; the dashboard
 only needs the GraphSAGE model, which is included. The frontend is not started by the script.
 
+## Tests and Ablation
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+`python src/ablation.py` retrains the models without `community_illicit_density`, with a
+time-based split, and with separate early-stopping / threshold sets, and writes the results to
+`notebooks/ablation_summary.md`.
+
 ## API Endpoints
 
 | Method | Path                         | Purpose                                                   |
 |--------|------------------------------|-----------------------------------------------------------|
 | GET    | `/health`                    | Service status, cycle-cache status and active threshold   |
 | GET    | `/model/info`                | Model name and test-set AUC-ROC / AUC-PR, computed live   |
-| GET    | `/accounts/flagged`          | Paginated, server-sorted list of flagged accounts         |
+| GET    | `/accounts/flagged`          | Paginated, server-sorted, searchable flagged accounts     |
 | GET    | `/accounts/{id}/risk-score`  | Predicted probability, label and key features             |
 | GET    | `/accounts/{id}/subgraph`    | 1 to 2 hop subgraph for visualisation                     |
 | GET    | `/accounts/{id}/explanation` | GNNExplainer feature/edge attributions and cycles         |

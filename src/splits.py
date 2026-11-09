@@ -1,18 +1,10 @@
 """
-Single source of truth for the account-level train/validation/test split.
+Shared train/val/test split used by every stage (70/10/20, stratified).
+- test: final metrics only
+- val: early stopping and threshold selection
+- train: the only labels models/features may see
 
-Every stage that needs the split (feature engineering, classical
-baselines, GraphSAGE training, explainability, the API) imports it from
-here, so all of them partition the 515,080 accounts identically:
-
-  - 20% test (stratified on is_illicit) — used only for final metrics
-  - 10% validation (12.5% of the remaining 80%, stratified) — used for
-    early stopping and decision-threshold selection
-  - 70% train — the only labels a model or a label-derived feature
-    may see
-
-Indices refer to row positions in data/processed/account_features.csv,
-which is also the node order of the PyG Data object.
+Indices are row positions in account_features.csv (= PyG node order).
 """
 
 import numpy as np

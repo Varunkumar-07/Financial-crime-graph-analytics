@@ -14,7 +14,7 @@ export interface KeyFeatures {
   total_received: number;
   transaction_count: number;
   avg_transaction_amount: number;
-  in_out_amount_ratio: number;
+  in_out_amount_ratio: number | null; // null if the account never sent money
 }
 
 export interface RiskScoreResponse {
@@ -71,6 +71,7 @@ export interface SubgraphResponse {
   hops: number;
   node_count: number;
   edge_count: number;
+  truncated: boolean;
   nodes: SubgraphNode[];
   edges: SubgraphEdge[];
 }

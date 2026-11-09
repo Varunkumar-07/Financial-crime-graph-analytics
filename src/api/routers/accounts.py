@@ -1,28 +1,29 @@
 import math
-import sys
-from pathlib import Path
-from typing import Literal
+import threading
+from functools import lru_cache
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from torch_geometric.utils import k_hop_subgraph
 
-SRC_DIR = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(SRC_DIR))
-
-from explainability import EXPLAIN_HOPS  # noqa: E402
-from torch_geometric.utils import k_hop_subgraph  # noqa: E402
-
-from api.models.inference import find_account_cycles, get_viz_subgraph, run_gnn_explainer  # noqa: E402
-from api.models.state import state  # noqa: E402
-from api.schemas.account import (  # noqa: E402
+from api.models.inference import find_account_cycles, get_viz_subgraph, run_gnn_explainer
+from api.models.state import state
+from api.schemas.account import (
     FlaggedAccount,
     FlaggedAccountsResponse,
     KeyFeatures,
     RiskScoreResponse,
 )
-from api.schemas.explanation import EdgeAttribution, ExplanationResponse, FeatureAttribution  # noqa: E402
-from api.schemas.subgraph import SubgraphEdge, SubgraphNode, SubgraphResponse  # noqa: E402
+from api.schemas.explanation import EdgeAttribution, ExplanationResponse, FeatureAttribution
+from api.schemas.subgraph import SubgraphEdge, SubgraphNode, SubgraphResponse
+from explainability import EXPLAIN_HOPS
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
+
+# Above this many nodes GNNExplainer gets too slow for an interactive request.
+EXPLAIN_MAX_NODES = 30_000
+# GNNExplainer reseeds torch globally, so run one at a time.
+_explain_lock = threading.Lock()
 
 
 def _require_account(account_id: str):
@@ -38,11 +39,12 @@ def _key_features(account_id: str) -> KeyFeatures:
         community_size=row["community_size"], community_illicit_density=row["community_illicit_density"],
         cycle_count=row["cycle_count"], cycle_flag=row["cycle_flag"], total_sent=row["total_sent"],
         total_received=row["total_received"], transaction_count=row["transaction_count"],
-        avg_transaction_amount=row["avg_transaction_amount"], in_out_amount_ratio=row["in_out_amount_ratio"],
+        avg_transaction_amount=row["avg_transaction_amount"],
+        in_out_amount_ratio=None if math.isnan(row["in_out_amount_ratio"]) else row["in_out_amount_ratio"],
     )
 
 
-# sort_by (API contract) -> flagged_df column (internal name).
+# sort_by value -> flagged_df column
 _SORT_COLUMNS = {
     "risk_score": "probability",
     "degree": "total_degree",
@@ -51,9 +53,7 @@ _SORT_COLUMNS = {
 }
 
 
-# NOTE: /accounts/flagged is registered before /accounts/{account_id}/... routes.
-# It doesn't actually collide (all account_id routes require a suffix like
-# /risk-score), but ordering it first is the safer convention.
+# Registered before the /accounts/{account_id} routes, to be safe.
 @router.get("/flagged", response_model=FlaggedAccountsResponse)
 def flagged_accounts(
     page: int = Query(1, ge=1, description="1-indexed page number"),
@@ -62,17 +62,15 @@ def flagged_accounts(
         "risk_score", description="Sorts the FULL flagged set (not just the current page) before pagination"
     ),
     sort_order: Literal["asc", "desc"] = Query("desc"),
+    search: Optional[str] = Query(None, max_length=64, description="Filter by account ID (substring)"),
 ):
-    # Sorts all ~12.7K flagged accounts (not the full 515K graph — flagged_df
-    # is pre-filtered to proba >= threshold at startup) on every request, then
-    # slices the requested page out of the sorted result. kind="mergesort" is
-    # stable, so tied values keep a consistent relative order across
-    # requests — without that, paginating through a run of ties (e.g. many
-    # accounts with cycle_count=0) could show accounts out of order or
-    # skip/duplicate them between page loads, since pandas' default
-    # quicksort isn't guaranteed stable.
+    # Filter and sort all flagged accounts, then slice the page. mergesort
+    # is stable, so ties keep the same order across pages.
+    df = state.flagged_df
+    if search and search.strip():
+        df = df[df["account"].str.contains(search.strip(), case=False, regex=False)]
     column = _SORT_COLUMNS[sort_by]
-    sorted_df = state.flagged_df.sort_values(column, ascending=(sort_order == "asc"), kind="mergesort")
+    sorted_df = df.sort_values(column, ascending=(sort_order == "asc"), kind="mergesort")
 
     total_flagged = len(sorted_df)
     total_pages = max(1, math.ceil(total_flagged / page_size))
@@ -115,7 +113,9 @@ def risk_score(account_id: str):
 @router.get("/{account_id}/subgraph", response_model=SubgraphResponse)
 def subgraph(account_id: str):
     _require_account(account_id)
-    G_sub, radius_used = get_viz_subgraph(account_id, state.data, state.G_multi)
+    G_sub, radius_used, truncated = get_viz_subgraph(
+        account_id, state.data, state.G_multi, state.account_to_idx
+    )
     center_community = int(state.features_df.loc[account_id, "community_id"])
 
     nodes = []
@@ -131,8 +131,7 @@ def subgraph(account_id: str):
             cycle_flag=bool(row["cycle_flag"] == 1),
         ))
 
-    # Collapse the MultiDiGraph's parallel edges into one entry per
-    # (source, target) pair, counting transactions and flagging illicit.
+    # One edge per (source, target): count transactions, mark illicit.
     collapsed = {}
     for u, v, edata in G_sub.edges(data=True):
         key = (u, v)
@@ -150,19 +149,33 @@ def subgraph(account_id: str):
 
     return SubgraphResponse(
         account_id=account_id, hops=radius_used, node_count=len(nodes), edge_count=len(edges),
-        nodes=nodes, edges=edges,
+        truncated=truncated, nodes=nodes, edges=edges,
     )
 
 
 @router.get("/{account_id}/explanation", response_model=ExplanationResponse)
 def explanation(account_id: str):
     _require_account(account_id)
-    proba = state.get_probability(account_id)
+    return _explain(account_id)
 
-    edge_importance, feat_importance = run_gnn_explainer(account_id, state.model, state.x, state.data)
+
+@lru_cache(maxsize=256)
+def _explain(account_id: str) -> ExplanationResponse:
+    proba = state.get_probability(account_id)
 
     idx = state.account_to_idx[account_id]
     subset, _, _, _ = k_hop_subgraph(idx, num_hops=EXPLAIN_HOPS, edge_index=state.data.edge_index, relabel_nodes=True)
+    if len(subset) > EXPLAIN_MAX_NODES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Account's {EXPLAIN_HOPS}-hop neighbourhood has {len(subset):,} accounts; "
+                   f"too large to explain interactively (limit {EXPLAIN_MAX_NODES:,}).",
+        )
+
+    with _explain_lock:
+        edge_importance, feat_importance = run_gnn_explainer(
+            account_id, state.model, state.x, state.data, state.account_to_idx
+        )
 
     top_feat_idx = feat_importance.argsort()[::-1][:5]
     top_features = [

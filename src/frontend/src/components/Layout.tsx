@@ -4,11 +4,7 @@ import { getModelInfo } from "../api/client";
 import type { ModelInfoResponse } from "../api/types";
 import "./Layout.css";
 
-// Model metrics are fetched from GET /model/info, computed live by the
-// backend from whatever model is actually loaded — never hardcoded here.
-// A retrain changes these numbers, and this header must not silently go
-// stale relative to the model actually serving predictions (see
-// notebooks/integration_test_summary.md for the incident that caused this).
+// Metrics come live from /model/info so they stay correct after a retrain.
 export function Layout() {
   const [modelInfo, setModelInfo] = useState<ModelInfoResponse | null>(null);
   const [failed, setFailed] = useState(false);

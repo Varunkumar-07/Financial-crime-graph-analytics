@@ -1,6 +1,5 @@
-// Interactive counterpart to the Phase 10 explainability PNGs: same color
-// language (red = illicit, blue = licit, gold ring = same community, orange
-// = high GNNExplainer importance), but zoomable/pannable/clickable.
+// Interactive subgraph. Red = illicit, blue = licit, gold ring = same
+// community, orange = high GNNExplainer importance.
 
 import cytoscape, { type ElementDefinition, type StylesheetStyle } from "cytoscape";
 import coseBilkent from "cytoscape-cose-bilkent";

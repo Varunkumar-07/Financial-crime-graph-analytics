@@ -17,7 +17,7 @@ class KeyFeatures(BaseModel):
     total_received: float
     transaction_count: float
     avg_transaction_amount: float
-    in_out_amount_ratio: float
+    in_out_amount_ratio: Optional[float] = Field(None, description="null if the account never sent money")
 
 
 class RiskScoreResponse(BaseModel):

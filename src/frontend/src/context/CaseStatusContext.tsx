@@ -1,26 +1,39 @@
-// Client-side only, in-memory case status tracking. Resets on page reload —
-// no backend persistence yet (explicitly out of scope for this phase).
+// Case statuses, saved in this browser's localStorage (no backend storage).
 
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { CaseStatus } from "../api/types";
+
+const STORAGE_KEY = "fcg-case-statuses";
+
+function loadStatuses(): Record<string, CaseStatus> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, CaseStatus>) : {};
+  } catch {
+    return {};
+  }
+}
 
 interface CaseStatusContextValue {
   getStatus: (accountId: string) => CaseStatus;
   setStatus: (accountId: string, status: CaseStatus) => void;
-  // Only meaningful for "reviewing" | "cleared" | "escalated" — those are
-  // never a default, so every account with one of them is guaranteed to be
-  // in `statuses` already. This is a COMPLETE list across the whole flagged
-  // dataset, not just whatever's currently loaded on screen — unlike
-  // "flagged" (the default for everyone, including accounts never seen this
-  // session, which this map has no way to know about). See Dashboard.tsx's
-  // status-filter split for why that distinction matters.
+  // Complete for reviewing/cleared/escalated (only set by a click).
+  // Not for "flagged", which is everyone's default.
   getAccountsByStatus: (status: CaseStatus) => string[];
 }
 
 const CaseStatusContext = createContext<CaseStatusContextValue | null>(null);
 
 export function CaseStatusProvider({ children }: { children: ReactNode }) {
-  const [statuses, setStatuses] = useState<Record<string, CaseStatus>>({});
+  const [statuses, setStatuses] = useState<Record<string, CaseStatus>>(loadStatuses);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(statuses));
+    } catch {
+      // storage unavailable (e.g. private mode): statuses just won't persist
+    }
+  }, [statuses]);
 
   const value = useMemo<CaseStatusContextValue>(
     () => ({

@@ -1,28 +1,18 @@
 """
-FastAPI app for the financial-crime-graph project: serves GraphSAGE
-risk scores, local sub-graphs, and GNNExplainer-based explanations for
-accounts in the transaction graph.
+FastAPI app: risk scores, subgraphs and explanations per account.
+Everything is loaded once at startup (see api/models/state.py).
 
-The model, graph, feature table, and cycle cache are all loaded ONCE
-at startup via AppState.load() (see api/models/state.py) — not
-per-request. Run with:
-
-    uvicorn api.main:app --reload --app-dir src
+Usage: uvicorn api.main:app --reload --app-dir src
 """
 
 import os
-import sys
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-SRC_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(SRC_DIR))
-
-from api.models.state import state  # noqa: E402
-from api.routers import accounts, health, model  # noqa: E402
+from api.models.state import state
+from api.routers import accounts, health, model
 
 
 @asynccontextmanager
@@ -40,12 +30,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Origins that may call this API directly from a browser. Needed because the
-# local Vite dev server runs on a different port from the API, so its
-# requests are cross-origin.
-# Configurable via env var — never hardcoded — because the right origin
-# list depends on deployment (local dev vs. a future live host), and
-# hardcoding it here would need a code change every time.
+# Allowed browser origins (Vite dev server by default). Override with
+# the CORS_ALLOWED_ORIGINS env var.
 _default_origins = "http://localhost:5173,http://127.0.0.1:5173"
 CORS_ALLOWED_ORIGINS = [
     origin.strip()

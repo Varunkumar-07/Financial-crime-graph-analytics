@@ -1,10 +1,5 @@
-// All calls hit the real FastAPI backend — no mock data. The backend must
-// be running (see project README) for anything here to work.
-//
-// API_BASE is configurable via VITE_API_BASE_URL (a Vite build-time env
-// var, baked into the JS bundle at `npm run build`). Local dev
-// (`npm run dev`) defaults to the backend's usual localhost port, matching
-// every earlier phase's testing.
+// Calls the FastAPI backend (must be running, see README).
+// Base URL comes from VITE_API_BASE_URL, defaults to localhost:8000.
 
 import type {
   ExplanationResponse,
@@ -45,9 +40,11 @@ export function getFlaggedAccounts(
   pageSize: number,
   sortBy: FlaggedSortBy,
   sortOrder: SortOrder,
+  search = "",
 ) {
+  const q = search.trim() ? `&search=${encodeURIComponent(search.trim())}` : "";
   return request<FlaggedAccountsResponse>(
-    `/accounts/flagged?page=${page}&page_size=${pageSize}&sort_by=${sortBy}&sort_order=${sortOrder}`,
+    `/accounts/flagged?page=${page}&page_size=${pageSize}&sort_by=${sortBy}&sort_order=${sortOrder}${q}`,
   );
 }
 
