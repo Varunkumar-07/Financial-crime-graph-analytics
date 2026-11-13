@@ -17,7 +17,7 @@
 
 **At default threshold 0.5:** precision=0.0523, recall=0.8592, f1=0.0986
 
-**At chosen threshold 0.7924 (F2-optimal on validation set, not test — avoids the threshold-leakage caveat noted in the classical baseline report):** precision=0.1403, recall=0.5075, f1=0.2198
+**At chosen threshold 0.7924 (F2-optimal on the validation set, not test — same protocol as the classical baselines):** precision=0.1403, recall=0.5075, f1=0.2198
 
 Confusion matrix at chosen threshold:
 

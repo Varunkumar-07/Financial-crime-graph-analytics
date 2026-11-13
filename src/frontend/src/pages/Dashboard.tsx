@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError, getFlaggedAccounts, getRiskScore } from "../api/client";
-import type { CaseStatus, FlaggedAccountsResponse, FlaggedSortBy, SortOrder } from "../api/types";
+import type {
+  CaseStatus,
+  FlaggedAccountsResponse,
+  FlaggedSortBy,
+  RiskScoreResponse,
+  SortOrder,
+} from "../api/types";
 import { StatusControl } from "../components/StatusControl";
 import { useCaseStatus } from "../context/CaseStatusContext";
 import "./Dashboard.css";
@@ -73,6 +79,7 @@ export function Dashboard() {
   const [touchedRows, setTouchedRows] = useState<DisplayRow[]>([]);
   const [touchedLoading, setTouchedLoading] = useState(false);
   const [touchedError, setTouchedError] = useState<string | null>(null);
+  const [touchedWarning, setTouchedWarning] = useState<string | null>(null);
 
   // Wait for typing to pause before searching on the backend.
   useEffect(() => {
@@ -84,11 +91,13 @@ export function Dashboard() {
   }, [search]);
 
   useEffect(() => {
+    // Status views list marked accounts directly; no need for the flagged page.
+    if (isTouchedMode) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
 
-    getFlaggedAccounts(page, PAGE_SIZE, sortBy, sortOrder, isTouchedMode ? "" : debouncedSearch)
+    getFlaggedAccounts(page, PAGE_SIZE, sortBy, sortOrder, debouncedSearch)
       .then((resp) => {
         if (cancelled) return;
         setListing(resp);
@@ -115,10 +124,17 @@ export function Dashboard() {
     let cancelled = false;
     setTouchedLoading(true);
     setTouchedError(null);
+    setTouchedWarning(null);
 
-    Promise.all(touchedIds.map((id) => getRiskScore(id)))
-      .then((results) => {
+    // allSettled: one missing account shouldn't hide all the others.
+    Promise.allSettled(touchedIds.map((id) => getRiskScore(id)))
+      .then((settled) => {
         if (cancelled) return;
+        const results = settled
+          .filter((s): s is PromiseFulfilledResult<RiskScoreResponse> => s.status === "fulfilled")
+          .map((s) => s.value);
+        const failed = settled.length - results.length;
+        if (failed > 0) setTouchedWarning(`${failed} marked account(s) could not be loaded.`);
         setTouchedRows(
           results.map((r) => ({
             account_id: r.account_id,
@@ -206,9 +222,8 @@ export function Dashboard() {
           <h1>Flagged Accounts</h1>
           {isTouchedMode ? (
             <p className="dashboard-subtitle">
-              Showing all <strong>{touchedRows.length}</strong> accounts marked{" "}
-              <strong>{statusFilter}</strong> — a complete search across every flagged account,
-              not just the current page.
+              Showing all <strong>{rows.length}</strong> accounts you marked{" "}
+              <strong>{statusFilter}</strong> (from any page, flagged or not).
             </p>
           ) : (
             listing && (
@@ -242,12 +257,16 @@ export function Dashboard() {
       </div>
 
       <p className="status-filter-note">
-        Reviewing / Cleared / Escalated search all flagged accounts. Flagged only checks the
-        current page (it's everyone's default, so this can't be a complete search).
+        Reviewing / Cleared / Escalated show every account you have marked with that status.
+        Flagged only checks the current page (it's everyone's default, so this can't be a
+        complete search).
       </p>
 
       {showError && <div className="banner banner-error">Failed to load: {showError}</div>}
       {showLoading && <div className="banner">Loading from live backend…</div>}
+      {isTouchedMode && !showLoading && touchedWarning && (
+        <div className="banner banner-error">{touchedWarning}</div>
+      )}
 
       {!showLoading && !showError && (
         <>
@@ -272,7 +291,7 @@ export function Dashboard() {
             </thead>
             <tbody>
               {rows.map((account) => (
-                <tr key={account.account_id} onClick={() => navigate(`/accounts/${account.account_id}`)}>
+                <tr key={account.account_id} onClick={() => navigate(`/accounts/${encodeURIComponent(account.account_id)}`)}>
                   <td className="mono">{account.account_id}</td>
                   <td>
                     <div className="risk-cell">

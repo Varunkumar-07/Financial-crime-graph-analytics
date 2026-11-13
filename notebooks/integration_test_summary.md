@@ -5,6 +5,19 @@ models → running API) rebuilds correctly and unattended from a clean state, an
 the full stack (backend + frontend) actually works against a freshly built system —
 not just against artifacts accumulated interactively across earlier phases.
 
+> **Historical record.** This describes the pipeline at the time of this test. Since then:
+> - The pipeline has **7 steps**: `explainability.py` now runs as Step 6 (rerun whenever
+>   GraphSAGE is retrained), and the backend is Step 7.
+> - Giant-SCC cycle detection is **exact and deterministic** (rank-ordered depth-limited
+>   search, ~0.1 s), not a 120 s wall-clock budget, so cycle counts no longer vary between
+>   runs. Total: 5,155 cycles of length 2-6.
+> - The frontend header fetches AUC-ROC / AUC-PR live from `GET /model/info`; nothing is
+>   hardcoded.
+> - CORS origins can be overridden with the `CORS_ALLOWED_ORIGINS` env var.
+> - All models now share one stratified 70/10/20 split with validation-chosen thresholds;
+>   the metric values quoted below (e.g. AUC-ROC 0.9218) are from older models. Current
+>   numbers are in `README.md` and `gnn_baseline_summary.md`.
+
 ## What was built
 
 **[scripts/run_pipeline.sh](../scripts/run_pipeline.sh)** — a single idempotent script that runs, in order:

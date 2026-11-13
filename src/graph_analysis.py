@@ -177,7 +177,6 @@ def compute_cycle_analysis(simple: nx.DiGraph) -> dict:
 
     small_scc_cycles = find_small_scc_cycles(simple, small_sccs)
     giant_scc_cycles = find_long_cycles(simple, giant_scc)
-    hit_cap = False  # kept for older caches, which used a time-capped search
 
     all_exact_cycles = two_cycles | three_cycles | small_scc_cycles
     all_cycles = all_exact_cycles | giant_scc_cycles
@@ -187,7 +186,6 @@ def compute_cycle_analysis(simple: nx.DiGraph) -> dict:
         "three_cycles": three_cycles,
         "small_scc_cycles": small_scc_cycles,
         "giant_scc_cycles": giant_scc_cycles,
-        "hit_cap": hit_cap,
         "all_exact_cycles": all_exact_cycles,
         "all_cycles": all_cycles,
         "nontrivial_scc_count": len(nontrivial_sccs),
@@ -199,12 +197,13 @@ def compute_cycle_analysis(simple: nx.DiGraph) -> dict:
 
 def get_cycle_analysis_cached(simple: nx.DiGraph, cache_path=CYCLES_CACHE_PATH) -> dict:
     """Cached compute_cycle_analysis() (detection takes ~10s).
-    Old-format caches are ignored and rebuilt.
+    Old-format caches (including ones from the old time-capped search)
+    are ignored and rebuilt.
     """
     if cache_path.exists():
         with open(cache_path, "rb") as f:
             cached = pickle.load(f)
-        if isinstance(cached, dict) and "all_cycles" in cached:
+        if isinstance(cached, dict) and "all_cycles" in cached and not cached.get("hit_cap"):
             print(f"Loaded cached cycle analysis from {cache_path} "
                   f"({len(cached['all_cycles']):,} cycles)")
             return cached
@@ -219,7 +218,7 @@ def get_cycle_analysis_cached(simple: nx.DiGraph, cache_path=CYCLES_CACHE_PATH) 
 
 
 def plot_suspicious_cluster(G: nx.MultiDiGraph, illicit_cycles: set, communities: list,
-                             node_to_comm: dict, illicit_nodes: set):
+                             illicit_nodes: set):
     if illicit_cycles:
         # Pick longest, then alphabetical, so the result is stable.
         cluster = max(illicit_cycles, key=lambda c: (len(c), c))
@@ -349,7 +348,6 @@ def main() -> None:
     three_cycles = cycle_result["three_cycles"]
     small_scc_cycles = cycle_result["small_scc_cycles"]
     giant_scc_cycles = cycle_result["giant_scc_cycles"]
-    hit_cap = cycle_result["hit_cap"]
     all_cycles = cycle_result["all_cycles"]
     nontrivial_sccs_count = cycle_result["nontrivial_scc_count"]
     giant_scc_size = cycle_result["giant_scc_size"]
@@ -360,23 +358,17 @@ def main() -> None:
     print(f"  {nontrivial_sccs_count} non-trivial SCCs; giant SCC size={giant_scc_size:,}, "
           f"{small_sccs_count} small SCCs (max size {small_sccs_max_size})")
     print(f"  4-6 length cycles in small SCCs: {len(small_scc_cycles)}")
-    print(f"  4-6 length cycles in giant SCC: {len(giant_scc_cycles)} "
-          f"({'partial, old time-capped cache' if hit_cap else 'exact'})")
+    print(f"  4-6 length cycles in giant SCC (exact): {len(giant_scc_cycles)}")
 
     illicit_cycles = {c for c in all_cycles if cycle_touches_illicit(c, illicit_edge_pairs)}
     pct_illicit_cycles = 100 * len(illicit_cycles) / len(all_cycles) if all_cycles else 0.0
 
     # Visualization
     print("Rendering suspicious cluster visualization...")
-    viz_title = plot_suspicious_cluster(G, illicit_cycles, communities, node_to_comm, illicit_nodes)
+    viz_title = plot_suspicious_cluster(G, illicit_cycles, communities, illicit_nodes)
     print(f"  Saved {CLUSTER_PNG} ({viz_title})")
 
     # Write summary
-    giant_scc_note = (
-        "PARTIAL — loaded from an old time-capped cache, so this is a lower bound"
-        if hit_cap
-        else "exact (exhaustive depth-limited search)"
-    )
     lines = [
         "# Graph Analysis Summary",
         "",
@@ -387,7 +379,7 @@ def main() -> None:
         f"4-6 length cycles within the {small_sccs_count} small strongly-connected components "
         f"(max size {small_sccs_max_size}).",
         f"- Cycle detection within the giant {giant_scc_size:,}-node strongly connected "
-        f"component: {giant_scc_note}.",
+        "component: exact (exhaustive depth-limited search).",
         "",
         "## Betweenness centrality — top 20 accounts",
         f"- Of the top 20 accounts by (approximate) betweenness centrality, "
@@ -418,9 +410,7 @@ def main() -> None:
         f"- 2-cycles (exact, whole graph): {len(two_cycles):,}",
         f"- 3-cycles (exact, whole graph): {len(three_cycles):,}",
         f"- 4-6 length cycles in small SCCs (exact): {len(small_scc_cycles):,}",
-        f"- 4-6 length cycles in giant SCC "
-        f"({'PARTIAL — lower bound, from an old time-capped cache' if hit_cap else 'exact'}): "
-        f"{len(giant_scc_cycles):,}",
+        f"- 4-6 length cycles in giant SCC (exact): {len(giant_scc_cycles):,}",
         f"- **Total cycles found: {len(all_cycles):,}**",
         f"- Cycles involving at least one illicit-labeled edge: {len(illicit_cycles):,} "
         f"({pct_illicit_cycles:.2f}% of all cycles found)",

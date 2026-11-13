@@ -5,7 +5,7 @@
 - Louvain communities: seed=42 on the undirected graph (weight 2 if money moved both ways between two accounts, else 1).
 - community_illicit_density: computed from TRAINING-split labels only (5-fold out-of-fold for training accounts, so no account's own label enters its own value); communities with no labelled training members use the global training illicit rate. No validation/test label enters any feature.
 - Cycle participation (length 2-6): 5,155 total cycles (shared cache, see graph_analysis_summary.md for how exact each part is).
-- Observed dataset window: 17.679 days (computed directly from min/max Timestamp). A `velocity` feature (transaction_count / window) was considered but dropped: since the window is constant across all accounts, it's a pure linear rescaling of `transaction_count` — perfectly collinear, adds no information, and was found to distort tree-based feature importance rankings (see baseline_model_summary.md).
+- Observed dataset window: 17.679 days (computed directly from min/max Timestamp). A `velocity` feature (transaction_count / window) was considered but dropped: since the window is constant across all accounts, it's a pure linear rescaling of `transaction_count` — perfectly collinear, adds no information, and would split tree-based feature importance between two identical columns.
 
 ## Feature table shape
 - 515,080 rows x 16 columns

@@ -2,7 +2,7 @@
 Trains and evaluates GraphSAGE, comparable to train_baseline.py
 (same split and metrics).
 
-- Full-batch on CPU (~0.85s/epoch; MPS was slower).
+- Full-batch on CPU (~2s/epoch; MPS was slower).
 - Class imbalance handled with weighted cross-entropy.
 
 Usage: python src/train_gnn.py
@@ -251,8 +251,8 @@ def main() -> None:
         f"**At default threshold 0.5:** precision={default_metrics['precision']:.4f}, "
         f"recall={default_metrics['recall']:.4f}, f1={default_metrics['f1']:.4f}",
         "",
-        f"**At chosen threshold {thresh:.4f} (F2-optimal on validation set, not test — "
-        "avoids the threshold-leakage caveat noted in the classical baseline report):** "
+        f"**At chosen threshold {thresh:.4f} (F2-optimal on the validation set, not test — "
+        "same protocol as the classical baselines):** "
         f"precision={chosen_metrics['precision']:.4f}, recall={chosen_metrics['recall']:.4f}, "
         f"f1={chosen_metrics['f1']:.4f}",
         "",

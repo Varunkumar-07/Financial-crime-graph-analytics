@@ -188,9 +188,13 @@ def run_gnn_explainer(account, model, x, data, account_to_idx=None):
 
 
 def top_edge_pairs(edge_importance, k=5):
-    """Top-k account pairs by importance, each pair listed once."""
+    """Top-k account pairs by importance, each pair listed once.
+    Self-transfers (u == v) are skipped: they are not neighbours.
+    """
     seen, top = set(), []
     for (u, v), imp in sorted(edge_importance.items(), key=lambda kv: -kv[1]):
+        if u == v:
+            continue
         key = frozenset((u, v))
         if key not in seen:
             seen.add(key)
@@ -200,8 +204,7 @@ def top_edge_pairs(edge_importance, k=5):
     return top
 
 
-def plot_case(account, case_type, G_sub, radius_used, illicit_nodes, illicit_edge_pairs,
-              account_cycles, community_lookup, edge_importance, feature_row, proba, y_true, threshold,
+def plot_case(account, case_type, G_sub, radius_used, illicit_nodes, account_cycles, community_lookup, edge_importance, feature_row, proba, y_true, threshold,
               top_features=()):
     fig = plt.figure(figsize=(15, 8))
     gs = fig.add_gridspec(1, 3, width_ratios=[2, 2, 1.5])
@@ -328,7 +331,6 @@ def main():
     features_df = pd.read_csv(PROJECT_ROOT / "data" / "processed" / "account_features.csv").set_index("account")
     community_lookup = features_df["community_id"].to_dict()
     illicit_nodes = set(features_df.index[features_df["is_illicit"] == 1])
-    illicit_edge_pairs = set()  # populated per-subgraph from real edge attrs below
 
     report_sections = []
     for account, case_type in samples:
@@ -350,8 +352,7 @@ def main():
         top_features = data.feature_cols
         top_feat_idx = np.argsort(-feat_importance)[:5]
         out_path = plot_case(
-            account, case_type, G_sub, radius_used, illicit_nodes, illicit_edge_pairs,
-            account_cycles, community_lookup, edge_importance, feature_row, proba, y_true, threshold,
+            account, case_type, G_sub, radius_used, illicit_nodes, account_cycles, community_lookup, edge_importance, feature_row, proba, y_true, threshold,
             top_features=[top_features[i] for i in top_feat_idx[:3]],
         )
         print(f"  Saved {out_path}")
@@ -411,9 +412,8 @@ def write_summary(sections):
         "model's 3 SAGEConv layers) extracted via `k_hop_subgraph` — confirmed compatible with "
         "GraphSAGE with no NeighborLoader needed; tested first on one account (0.68s on a "
         "2,381-node subgraph) before running on all four (largest: 2.82s on 14,916 nodes).",
-        "- Cycle membership: cycle detection was recomputed once for this phase, reusing the "
-        "exact functions and parameters from graph_analysis.py (same giant-SCC partial-sample "
-        "caveat applies — see that module).",
+        "- Cycle membership: read from the shared exact cycle cache built by graph_analysis.py "
+        "(all directed cycles of length 2-6).",
         "- Community membership: read directly from account_features.csv (`community_id`).",
         "",
     ]
@@ -439,69 +439,44 @@ def write_summary(sections):
             "",
         ]
 
-    # Per-case explanation text
-    by_type = {s["case_type"]: s for s in sections}
-    narrative = [
-        "## Case-by-case narrative",
-        "",
-    ]
-    if "true_positive_confident" in by_type:
-        s = by_type["true_positive_confident"]
-        narrative += [
-            f"**{s['account']} (confident true positive):** the model flags this account with high confidence "
-            f"({s['proba']:.3f}), and GNNExplainer's top features/edges show why: high degree, "
-            "heavy cycle participation, and neighbors that are themselves illicit or highly "
-            "central. This is the model working as intended — structural signal and labels align.",
-            "",
-        ]
-    if "true_positive_marginal" in by_type:
-        s = by_type["true_positive_marginal"]
-        narrative += [
-            f"**{s['account']} (marginal true positive):** correctly caught, but only just — "
-            f"probability {s['proba']:.4f} is barely above the {s['threshold']:.4f} threshold. "
-            "This is a realistic 'good but not overwhelming' catch, useful for calibrating how "
-            "much confidence to place in borderline flags from this model.",
-            "",
-        ]
-    if "false_negative" in by_type:
-        s = by_type["false_negative"]
-        cycle_lens = sorted(len(c) for c in s["account_cycles"])
-        narrative += [
-            f"**{s['account']} (false negative, honest miss):** true label is illicit, but the "
-            f"model scored it {s['proba']:.4f} — just under the {s['threshold']:.4f} threshold. "
-            f"Notably, this account IS in {len(cycle_lens)} detected cycle(s) (lengths {cycle_lens}), "
-            "which normally correlates with illicit activity — so cycle participation alone wasn't "
-            "enough here. The likely explanation, per GNNExplainer's attribution, is that this "
-            "account's immediate neighbors are predominantly licit-labeled, so message-passing "
-            "diluted the cycle signal below the decision threshold. This illustrates a real "
-            "limitation: an account embedded mostly among legitimate accounts, even if it "
-            "participates in a suspicious cycle, can still slip under the threshold.",
-            "",
-        ]
-    if "false_positive" in by_type:
-        s = by_type["false_positive"]
-        cycle_lens = sorted(len(c) for c in s["account_cycles"])
-        narrative += [
-            f"**{s['account']} (false positive, honest false alarm):** true label is licit, but the "
-            f"model was highly confident it was illicit ({s['proba']:.4f}). "
-            + (f"This account is itself in {len(cycle_lens)} detected cycle(s) (lengths {cycle_lens}), "
-               "which is very likely what misled the model — cycle participation is a strong "
-               "learned signal, but not every account in a short transaction cycle is actually "
-               "laundering money; some cyclic payment patterns (e.g. reciprocal business "
-               "payments) are entirely legitimate. "
-               if cycle_lens else
-               "This account is not in any detected cycle, so the false alarm is likely driven "
-               "by degree/community features resembling illicit accounts rather than cycle "
-               "structure specifically. ")
-            + "This is a good example of why the model's output should support, not replace, "
-            "manual review — a high score here would trigger unnecessary investigation.",
-            "",
-        ]
-
+    # Per-case narrative, built only from the computed numbers above.
+    narrative = ["## Case-by-case narrative", ""]
+    for s in sections:
+        narrative += [_narrative(s), ""]
     lines += narrative
     summary = "\n".join(lines)
     SUMMARY_MD.write_text(summary)
     print(f"\nSaved {SUMMARY_MD}")
+
+
+def _narrative(s):
+    """One factual paragraph per case, using only computed values."""
+    acct, ct = s["account"], s["case_type"]
+    proba, thr = s["proba"], s["threshold"]
+    cycle_lens = sorted(len(c) for c in s["account_cycles"])
+    n_nb, n_ill = s["n_neighbours"], s["n_illicit_neighbours"]
+    fr = s["feature_row"]
+    label = CASE_LABELS[ct].lower()
+    gap = proba - thr
+    parts = [
+        f"**{acct} ({label}):** true label {'illicit' if s['y_true'] == 1 else 'licit'}, "
+        f"probability {proba:.4f} vs threshold {thr:.4f} "
+        f"({'+' if gap >= 0 else '-'}{abs(gap):.4f}).",
+        f"It has {n_nb} direct neighbour(s), {n_ill} of them illicit-labelled; "
+        f"in/out degree {fr['in_degree']:.0f}/{fr['out_degree']:.0f}; "
+        + (f"{len(cycle_lens)} detected cycle(s) (lengths {cycle_lens})." if cycle_lens
+           else "no detected cycles."),
+        f"GNNExplainer's top features: {', '.join(s['top_features'][:3])}.",
+    ]
+    if ct == "true_positive_marginal":
+        parts.append("A borderline catch: small changes to the threshold would drop it.")
+    elif ct == "false_negative":
+        parts.append("A miss: the account is in a cycle but still scored below the threshold, "
+                     "so cycle membership alone does not guarantee a flag.")
+    elif ct == "false_positive":
+        parts.append("A false alarm: its local structure resembles illicit accounts, which is "
+                     "why scores should support, not replace, manual review.")
+    return " ".join(parts)
 
 
 if __name__ == "__main__":

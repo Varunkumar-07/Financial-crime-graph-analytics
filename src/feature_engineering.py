@@ -215,7 +215,7 @@ def main() -> None:
         "Timestamp). A `velocity` feature (transaction_count / window) was considered but "
         "dropped: since the window is constant across all accounts, it's a pure linear "
         "rescaling of `transaction_count` — perfectly collinear, adds no information, and "
-        "was found to distort tree-based feature importance rankings (see baseline_model_summary.md).",
+        "would split tree-based feature importance between two identical columns.",
         "",
         "## Feature table shape",
         f"- {n_rows:,} rows x {n_cols} columns",
