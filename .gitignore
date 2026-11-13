@@ -16,3 +16,4 @@ data/processed.backup_*/
 paper/
 
 data/processed/graph_metrics_cache.pkl
+report_backup_*/
